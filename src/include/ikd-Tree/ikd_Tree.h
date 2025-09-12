@@ -10,6 +10,14 @@
 #include <memory>
 #include <pcl/point_types.h>
 
+/*
+EPSS：浮点数比较的精度阈值（1e-6）
+Minimal_Unbalanced_Tree_Size：树结构失衡的最小节点数阈值（10）
+Multi_Thread_Rebuild_Point_Num：多线程重建的点数阈值（50）
+DOWNSAMPLE_SWITCH：下采样功能开关（true表示开启）
+ForceRebuildPercentage：强制重建的百分比阈值（0.2）
+Q_LEN：队列最大长度（1000000）
+*/
 #define EPSS 1e-6
 #define Minimal_Unbalanced_Tree_Size 10
 #define Multi_Thread_Rebuild_Point_Num 1500

@@ -1654,8 +1654,8 @@ void predict(double &dt, processnoisecovariance &Q, const input &i_in){
 void update_iterated_dyn_share_modified(double R, double &solve_time) {
 	
 	dyn_share_datastruct<scalar_type> dyn_share;
-	dyn_share.valid = true;
-	dyn_share.converge = true;
+	dyn_share.valid = true; // 用于指示当前状态是否有效
+	dyn_share.converge = true; // 用于指示迭代是否收敛
 	int t = 0;
 	state x_propagated = x_;
 	cov P_propagated = P_;

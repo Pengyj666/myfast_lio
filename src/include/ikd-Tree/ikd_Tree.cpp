@@ -437,6 +437,18 @@ void KD_TREE<PointType>::Radius_Search(PointType point, const float radius, Poin
     Search_by_radius(Root_Node, point, radius, Storage);
 }
 
+
+/**
+ * @brief 向KD树中添加一组点，并根据下采样开关决定是否进行下采样处理。
+ * 
+ * 该函数遍历输入的点集，若启用下采样，则对每个点所在的体素范围进行搜索，
+ * 找到距离体素中心最近的点作为代表点插入树中；否则直接将点插入树中。
+ * 插入过程中会判断是否正在进行重建操作，以决定是否需要记录操作日志。
+ *
+ * @param PointToAdd 待添加的点集合（PointVector类型）
+ * @param downsample_on 是否启用下采样的标志位
+ * @return 返回实际被插入或更新的点的数量
+ */
 template <typename PointType>
 int KD_TREE<PointType>::Add_Points(PointVector & PointToAdd, bool downsample_on){
     int NewPointSize = PointToAdd.size();
@@ -446,19 +458,28 @@ int KD_TREE<PointType>::Add_Points(PointVector & PointToAdd, bool downsample_on)
     bool downsample_switch = downsample_on && DOWNSAMPLE_SWITCH;
     float min_dist, tmp_dist;
     int tmp_counter = 0;
+
+    // 遍历所有待添加的点
     for (int i=0; i<PointToAdd.size();i++){
         if (downsample_switch){
+            // 计算当前点所在体素的边界框
             Box_of_Point.vertex_min[0] = floor(PointToAdd[i].x/downsample_size)*downsample_size;
             Box_of_Point.vertex_max[0] = Box_of_Point.vertex_min[0]+downsample_size;
             Box_of_Point.vertex_min[1] = floor(PointToAdd[i].y/downsample_size)*downsample_size;
             Box_of_Point.vertex_max[1] = Box_of_Point.vertex_min[1]+downsample_size; 
             Box_of_Point.vertex_min[2] = floor(PointToAdd[i].z/downsample_size)*downsample_size;
             Box_of_Point.vertex_max[2] = Box_of_Point.vertex_min[2]+downsample_size;   
+
+            // 计算体素中心点坐标
             mid_point.x = Box_of_Point.vertex_min[0] + (Box_of_Point.vertex_max[0]-Box_of_Point.vertex_min[0])/2.0;
             mid_point.y = Box_of_Point.vertex_min[1] + (Box_of_Point.vertex_max[1]-Box_of_Point.vertex_min[1])/2.0;
             mid_point.z = Box_of_Point.vertex_min[2] + (Box_of_Point.vertex_max[2]-Box_of_Point.vertex_min[2])/2.0;
+
+            // 清空临时存储并查找当前体素内的所有点
             PointVector ().swap(Downsample_Storage);
             Search_by_range(Root_Node, Box_of_Point, Downsample_Storage);
+
+            // 在体素内寻找距离中心最近的点
             min_dist = calc_dist(PointToAdd[i],mid_point);
             downsample_result = PointToAdd[i];                
             for (int index = 0; index < Downsample_Storage.size(); index++){
@@ -468,6 +489,8 @@ int KD_TREE<PointType>::Add_Points(PointVector & PointToAdd, bool downsample_on)
                     downsample_result = Downsample_Storage[index];
                 }
             }
+
+            // 判断是否处于重建状态，选择不同的插入方式
             if (Rebuild_Ptr == nullptr || *Rebuild_Ptr != Root_Node){  
                 if (Downsample_Storage.size() > 1 || same_point(PointToAdd[i], downsample_result)){
                     if (Downsample_Storage.size() > 0) Delete_by_range(&Root_Node, Box_of_Point, true, true);
@@ -481,10 +504,13 @@ int KD_TREE<PointType>::Add_Points(PointVector & PointToAdd, bool downsample_on)
                     operation_delete.op = DOWNSAMPLE_DELETE;
                     operation.point = downsample_result;
                     operation.op = ADD_POINT;
+
                     pthread_mutex_lock(&working_flag_mutex);
                     if (Downsample_Storage.size() > 0) Delete_by_range(&Root_Node, Box_of_Point, false , true);                                      
                     Add_by_point(&Root_Node, downsample_result, false, Root_Node->division_axis);
                     tmp_counter ++;
+
+                    // 如果正在重建，则记录操作日志
                     if (rebuild_flag){
                         pthread_mutex_lock(&rebuild_logger_mutex_lock);
                         if (Downsample_Storage.size() > 0) Rebuild_Logger.push(operation_delete);
@@ -495,12 +521,14 @@ int KD_TREE<PointType>::Add_Points(PointVector & PointToAdd, bool downsample_on)
                 };
             }
         } else {
+            // 不启用下采样时直接插入点
             if (Rebuild_Ptr == nullptr || *Rebuild_Ptr != Root_Node){
                 Add_by_point(&Root_Node, PointToAdd[i], true, Root_Node->division_axis);     
             } else {
                 Operation_Logger_Type operation;
                 operation.point = PointToAdd[i];
                 operation.op = ADD_POINT;                
+
                 pthread_mutex_lock(&working_flag_mutex);
                 Add_by_point(&Root_Node, PointToAdd[i], false, Root_Node->division_axis);
                 if (rebuild_flag){
@@ -559,18 +587,37 @@ void KD_TREE<PointType>::Delete_Points(PointVector & PointToDel){
     return;
 }
 
+/**
+ * @brief 从KD树中删除指定包围盒范围内的点
+ * 
+ * 该函数遍历输入的包围盒列表，删除每个包围盒范围内的所有点。
+ * 根据重建指针的状态，选择直接删除或在重建过程中记录删除操作。
+ * 
+ * @param BoxPoints 包含多个包围盒的向量，每个包围盒定义了要删除点的空间范围
+ * @return 返回实际删除的点的数量
+ */
 template <typename PointType>
 int KD_TREE<PointType>::Delete_Point_Boxes(vector<BoxPointType> & BoxPoints){
     int tmp_counter = 0;
+    
+    // 遍历所有包围盒，逐个执行删除操作
     for (int i=0;i < BoxPoints.size();i++){ 
-        if (Rebuild_Ptr == nullptr || *Rebuild_Ptr != Root_Node){               
+        // 检查是否处于重建状态
+        if (Rebuild_Ptr == nullptr || *Rebuild_Ptr != Root_Node){       
+            // 非重建状态：直接执行删除操作
             tmp_counter += Delete_by_range(&Root_Node ,BoxPoints[i], true, false);
         } else {
+            cout << "Delete_Point_Boxes  Rebuild_Ptr == nullptr || *Rebuild_Ptr != Root_Node)" << endl;
+            // 重建状态：需要记录操作日志
             Operation_Logger_Type operation;
             operation.boxpoint = BoxPoints[i];
             operation.op = DELETE_BOX;     
+            
             pthread_mutex_lock(&working_flag_mutex); 
+            // 执行删除但不立即更新树结构
             tmp_counter += Delete_by_range(&Root_Node ,BoxPoints[i], false, false);
+            
+            // 如果正在重建，则将删除操作记录到重建日志中
             if (rebuild_flag){
                 pthread_mutex_lock(&rebuild_logger_mutex_lock);
                 Rebuild_Logger.push(operation);
@@ -579,6 +626,7 @@ int KD_TREE<PointType>::Delete_Point_Boxes(vector<BoxPointType> & BoxPoints){
             pthread_mutex_unlock(&working_flag_mutex);
         }
     } 
+    
     return tmp_counter;
 }
 
@@ -672,38 +720,87 @@ void KD_TREE<PointType>::Rebuild(KD_TREE_NODE ** root){
 }
 
 template <typename PointType>
+/*
+ * 函数名: Delete_by_range
+ * 功能: 在KD树中删除指定范围内的点。支持普通删除和下采样删除两种模式。
+ * 参数:
+ *   root              - 指向当前节点指针的指针，用于递归操作树结构
+ *   boxpoint          - 删除范围的边界框（BoxPointType类型）
+ *   allow_rebuild     - 是否允许在删除后进行树的重建优化
+ *   is_downsample     - 是否为下采样模式下的删除操作
+ * 返回值: 被删除的点的数量
+ *
+ * 说明:
+ *   该函数通过递归遍历KD树，判断节点是否落在给定的删除范围内，并标记删除。
+ *   如果整个子树都落在删除范围内，则直接标记整棵子树为删除状态；
+ *   否则继续递归处理左右子树，并在回溯时更新节点信息。
+ *   支持多线程环境下的安全操作与重建日志记录。
+ */
 int KD_TREE<PointType>::Delete_by_range(KD_TREE_NODE ** root,  BoxPointType boxpoint, bool allow_rebuild, bool is_downsample){   
+    // 如果当前节点为空或已被删除，直接返回
     if ((*root) == nullptr || (*root)->tree_deleted) return 0;
+
+    // 标记当前节点正在被操作
     (*root)->working_flag = true;
-    Push_Down(*root);
+    Push_Down(*root);  // 将父节点的删除状态向下传递
+
     int tmp_counter = 0;
+
+    // 判断当前节点的x、y、z范围是否与删除范围有交集，无交集则返回
     if (boxpoint.vertex_max[0] <= (*root)->node_range_x[0] || boxpoint.vertex_min[0] > (*root)->node_range_x[1]) return 0;
     if (boxpoint.vertex_max[1] <= (*root)->node_range_y[0] || boxpoint.vertex_min[1] > (*root)->node_range_y[1]) return 0;
     if (boxpoint.vertex_max[2] <= (*root)->node_range_z[0] || boxpoint.vertex_min[2] > (*root)->node_range_z[1]) return 0;
-    if (boxpoint.vertex_min[0] <= (*root)->node_range_x[0] && boxpoint.vertex_max[0] > (*root)->node_range_x[1] && boxpoint.vertex_min[1] <= (*root)->node_range_y[0] && boxpoint.vertex_max[1] > (*root)->node_range_y[1] && boxpoint.vertex_min[2] <= (*root)->node_range_z[0] && boxpoint.vertex_max[2] > (*root)->node_range_z[1]){
+
+    // 如果当前节点的整个范围完全包含在删除范围内
+    if (boxpoint.vertex_min[0] <= (*root)->node_range_x[0] && boxpoint.vertex_max[0] > (*root)->node_range_x[1] &&
+        boxpoint.vertex_min[1] <= (*root)->node_range_y[0] && boxpoint.vertex_max[1] > (*root)->node_range_y[1] &&
+        boxpoint.vertex_min[2] <= (*root)->node_range_z[0] && boxpoint.vertex_max[2] > (*root)->node_range_z[1]) {
+
+        // 标记整棵树为删除状态
         (*root)->tree_deleted = true;
         (*root)->point_deleted = true;
         (*root)->need_push_down_to_left = true;
         (*root)->need_push_down_to_right = true;
+
+        // 计算有效点数量并更新无效点计数
         tmp_counter = (*root)->TreeSize - (*root)->invalid_point_num;
         (*root)->invalid_point_num = (*root)->TreeSize;
+
+        // 如果是下采样删除，也标记下采样删除状态
         if (is_downsample){
             (*root)->tree_downsample_deleted = true;
             (*root)->point_downsample_deleted = true;
             (*root)->down_del_num = (*root)->TreeSize;
         }
+
         return tmp_counter;
     }
-    if (!(*root)->point_deleted && boxpoint.vertex_min[0] <= (*root)->point.x && boxpoint.vertex_max[0] > (*root)->point.x && boxpoint.vertex_min[1] <= (*root)->point.y && boxpoint.vertex_max[1] > (*root)->point.y && boxpoint.vertex_min[2] <= (*root)->point.z && boxpoint.vertex_max[2] > (*root)->point.z){
+
+    // 如果当前节点的点在删除范围内且未被删除，则标记该点为删除
+    if (!(*root)->point_deleted &&
+        boxpoint.vertex_min[0] <= (*root)->point.x && boxpoint.vertex_max[0] > (*root)->point.x &&
+        boxpoint.vertex_min[1] <= (*root)->point.y && boxpoint.vertex_max[1] > (*root)->point.y &&
+        boxpoint.vertex_min[2] <= (*root)->point.z && boxpoint.vertex_max[2] > (*root)->point.z) {
+
         (*root)->point_deleted = true;
         tmp_counter += 1;
+
         if (is_downsample) (*root)->point_downsample_deleted = true;
     }
+
+    // 构造操作日志对象
     Operation_Logger_Type delete_box_log;
     struct timespec Timeout;    
-    if (is_downsample) delete_box_log.op = DOWNSAMPLE_DELETE;
-        else delete_box_log.op = DELETE_BOX;
+
+    // 根据删除类型设置操作类型
+    if (is_downsample)
+        delete_box_log.op = DOWNSAMPLE_DELETE;
+    else
+        delete_box_log.op = DELETE_BOX;
+
     delete_box_log.boxpoint = boxpoint;
+
+    // 处理左子树
     if ((Rebuild_Ptr == nullptr) || (*root)->left_son_ptr != *Rebuild_Ptr){
         tmp_counter += Delete_by_range(&((*root)->left_son_ptr), boxpoint, allow_rebuild, is_downsample);
     } else {
@@ -716,6 +813,8 @@ int KD_TREE<PointType>::Delete_by_range(KD_TREE_NODE ** root,  BoxPointType boxp
         }
         pthread_mutex_unlock(&working_flag_mutex);
     }
+
+    // 处理右子树
     if ((Rebuild_Ptr == nullptr) || (*root)->right_son_ptr != *Rebuild_Ptr){
         tmp_counter += Delete_by_range(&((*root)->right_son_ptr), boxpoint, allow_rebuild, is_downsample);
     } else {
@@ -728,13 +827,28 @@ int KD_TREE<PointType>::Delete_by_range(KD_TREE_NODE ** root,  BoxPointType boxp
         }
         pthread_mutex_unlock(&working_flag_mutex);
     }    
+
+    // 更新当前节点的状态信息
     Update(*root);     
-    if (Rebuild_Ptr != nullptr && *Rebuild_Ptr == *root && (*root)->TreeSize < Multi_Thread_Rebuild_Point_Num) Rebuild_Ptr = nullptr; 
+
+    // 如果当前节点是重建指针指向的节点，并且节点规模小于阈值，则清除重建指针
+    if (Rebuild_Ptr != nullptr && *Rebuild_Ptr == *root && (*root)->TreeSize < Multi_Thread_Rebuild_Point_Num) 
+    {
+        Rebuild_Ptr = nullptr; 
+        cout << "Clear Rebuild_Ptr" << endl;
+    }
+        
+
+    // 检查是否需要重建树结构
     bool need_rebuild = allow_rebuild & Criterion_Check((*root));
     if (need_rebuild) Rebuild(root);
+
+    // 清除当前节点的工作标志
     if ((*root) != nullptr) (*root)->working_flag = false;
+
     return tmp_counter;
 }
+
 
 template <typename PointType>
 void KD_TREE<PointType>::Delete_by_point(KD_TREE_NODE ** root, PointType point, bool allow_rebuild){   
@@ -892,13 +1006,34 @@ void KD_TREE<PointType>::Add_by_point(KD_TREE_NODE ** root, PointType point, boo
     return;
 }
 
+/**
+ * @brief 在KD树中搜索给定点的k近邻点
+ * 
+ * 该函数通过递归遍历KD树来查找距离给定点最近的k个点。在搜索过程中会考虑最大搜索距离，
+ * 并使用堆维护当前找到的最接近的点。同时处理了多线程环境下的重建操作同步问题。
+ * 
+ * @tparam PointType 点的数据类型，需支持坐标访问
+ * @param root 当前搜索的树节点指针
+ * @param k_nearest 需要查找的最近邻点的数量
+ * @param point 查询点
+ * @param q 用于存储k近邻点的手动堆结构
+ * @param max_dist 最大搜索距离（欧式距离）
+ */
 template <typename PointType>
 void KD_TREE<PointType>::Search(KD_TREE_NODE * root, int k_nearest, PointType point, MANUAL_HEAP &q, double max_dist){
+    // 如果当前节点为空或已被删除，则直接返回
     if (root == nullptr || root->tree_deleted) return;   
+    
+    // 计算当前节点包围盒到查询点的距离
     double cur_dist = calc_box_dist(root, point);
     double max_dist_sqr = max_dist * max_dist;
+    
+    // 若包围盒距离大于最大搜索距离，则剪枝
     if (cur_dist > max_dist_sqr) return;    
+    
     int retval; 
+    
+    // 如果当前节点需要向下推送更新，则尝试加锁并执行推送操作
     if (root->need_push_down_to_left || root->need_push_down_to_right) {
         retval = pthread_mutex_trylock(&(root->push_down_mutex_lock));
         if (retval == 0){
@@ -909,19 +1044,27 @@ void KD_TREE<PointType>::Search(KD_TREE_NODE * root, int k_nearest, PointType po
             pthread_mutex_unlock(&(root->push_down_mutex_lock));
         }
     }
+    
+    // 如果当前节点未被标记为删除，则计算其与查询点的实际距离
     if (!root->point_deleted){
         float dist = calc_dist(point, root->point);
+        // 如果距离满足条件且堆未满或当前点更优，则更新堆
         if (dist <= max_dist_sqr && (q.size() < k_nearest || dist < q.top().dist)){
             if (q.size() >= k_nearest) q.pop();
             PointType_CMP current_point{root->point, dist};                    
             q.push(current_point);            
         }
     }  
-    int cur_search_counter;
+    
+    // 获取左右子节点到查询点的包围盒距离
     float dist_left_node = calc_box_dist(root->left_son_ptr, point);
     float dist_right_node = calc_box_dist(root->right_son_ptr, point);
+    
+    // 根据堆状态和子节点距离决定搜索顺序
     if (q.size()< k_nearest || dist_left_node < q.top().dist && dist_right_node < q.top().dist){
+        // 优先搜索距离较小的子树
         if (dist_left_node <= dist_right_node) {
+            // 处理左子树搜索，包括重建时的同步控制
             if (Rebuild_Ptr == nullptr || *Rebuild_Ptr != root->left_son_ptr){
                 Search(root->left_son_ptr, k_nearest, point, q, max_dist);                       
             } else {
@@ -939,6 +1082,7 @@ void KD_TREE<PointType>::Search(KD_TREE_NODE * root, int k_nearest, PointType po
                 search_mutex_counter -= 1;
                 pthread_mutex_unlock(&search_flag_mutex);
             }
+            // 如果右子树也可能包含更近的点，则继续搜索右子树
             if (q.size() < k_nearest || dist_right_node < q.top().dist) {
                 if (Rebuild_Ptr == nullptr || *Rebuild_Ptr != root->right_son_ptr){
                     Search(root->right_son_ptr, k_nearest, point, q, max_dist);                       
@@ -959,6 +1103,7 @@ void KD_TREE<PointType>::Search(KD_TREE_NODE * root, int k_nearest, PointType po
                 }                
             }
         } else {
+            // 优先搜索右子树
             if (Rebuild_Ptr == nullptr || *Rebuild_Ptr != root->right_son_ptr){
                 Search(root->right_son_ptr, k_nearest, point, q, max_dist);                       
             } else {
@@ -976,6 +1121,7 @@ void KD_TREE<PointType>::Search(KD_TREE_NODE * root, int k_nearest, PointType po
                 search_mutex_counter -= 1;
                 pthread_mutex_unlock(&search_flag_mutex);
             }
+            // 如果左子树也可能包含更近的点，则继续搜索左子树
             if (q.size() < k_nearest || dist_left_node < q.top().dist) {            
                 if (Rebuild_Ptr == nullptr || *Rebuild_Ptr != root->left_son_ptr){
                     Search(root->left_son_ptr, k_nearest, point, q, max_dist);                       
@@ -997,6 +1143,7 @@ void KD_TREE<PointType>::Search(KD_TREE_NODE * root, int k_nearest, PointType po
             }
         }
     } else {
+        // 分别检查左右子树是否可能包含更近的点
         if (dist_left_node < q.top().dist) {        
             if (Rebuild_Ptr == nullptr || *Rebuild_Ptr != root->left_son_ptr){
                 Search(root->left_son_ptr, k_nearest, point, q, max_dist);                       
@@ -1038,7 +1185,6 @@ void KD_TREE<PointType>::Search(KD_TREE_NODE * root, int k_nearest, PointType po
     }
     return;
 }
-
 template <typename PointType>
 void KD_TREE<PointType>::Search_by_range(KD_TREE_NODE *root, BoxPointType boxpoint, PointVector & Storage){
     if (root == nullptr) return;
@@ -1113,97 +1259,174 @@ void KD_TREE<PointType>::Search_by_radius(KD_TREE_NODE *root, PointType point, f
     return;
 }
 
+/**
+ * @brief 检查KD树节点是否需要重新平衡的判据函数
+ * 
+ * 该函数通过评估节点的删除率和平衡因子来判断当前节点是否需要进行重新平衡操作。
+ * 主要评估两个指标：1）无效点的比例 2）左右子树的平衡度
+ * 
+ * @param root 指向需要检查的KD树节点的指针
+ * @return bool 返回true表示需要重新平衡，返回false表示不需要重新平衡
+ */
 template <typename PointType>
 bool KD_TREE<PointType>::Criterion_Check(KD_TREE_NODE * root){
+    // 如果树的大小小于最小不平衡树大小阈值，则不需要重新平衡
     if (root->TreeSize <= Minimal_Unbalanced_Tree_Size){
         return false;
     }
     float balance_evaluation = 0.0f;
     float delete_evaluation = 0.0f;
     KD_TREE_NODE * son_ptr = root->left_son_ptr;
+    // 获取存在的子节点指针，优先选择左子节点，如果为空则选择右子节点
     if (son_ptr == nullptr) son_ptr = root->right_son_ptr;
+    // 计算删除评估值：无效点数量占总节点数的比例
     delete_evaluation = float(root->invalid_point_num)/ root->TreeSize;
+    // 计算平衡评估值：子树大小占父节点有效节点数的比例
     balance_evaluation = float(son_ptr->TreeSize) / (root->TreeSize-1);  
+    // 如果删除率超过删除判据参数，则需要重新平衡
     if (delete_evaluation > delete_criterion_param){
         return true;
     }
+    // 如果平衡因子超过平衡判据参数的范围，则需要重新平衡
     if (balance_evaluation > balance_criterion_param || balance_evaluation < 1-balance_criterion_param){
         return true;
     } 
     return false;
 }
-
+/**
+ * @brief 将当前节点的删除标记向下传递给其左右子节点（Push Down 操作）
+ * 
+ * 该函数用于 KD 树中，将某个节点上的删除标记（如 tree_deleted 和 tree_downsample_deleted）
+ * 向下传播到其左右子树。如果子节点正在重建，则需要加锁处理，并可能记录操作日志。
+ * 此操作确保删除状态在整个树结构中保持一致。
+ *
+ * @tparam PointType KD 树中存储的点的类型
+ * @param root 当前处理的 KD 树节点指针
+ * 
+ * @note 该函数不返回任何值
+ */
 template <typename PointType>
 void KD_TREE<PointType>::Push_Down(KD_TREE_NODE *root){
     if (root == nullptr) return;
+
+    // 记录本次操作的日志信息
     Operation_Logger_Type operation;
     operation.op = PUSH_DOWN;
     operation.tree_deleted = root->tree_deleted;
     operation.tree_downsample_deleted = root->tree_downsample_deleted;
+
+    // 处理左子节点的 push down 操作
     if (root->need_push_down_to_left && root->left_son_ptr != nullptr){
+        // 如果左子节点不在重建过程中
         if (Rebuild_Ptr == nullptr || *Rebuild_Ptr != root->left_son_ptr){
+            // 更新左子节点的删除状态
             root->left_son_ptr->tree_downsample_deleted |= root->tree_downsample_deleted;
             root->left_son_ptr->point_downsample_deleted |= root->tree_downsample_deleted;
             root->left_son_ptr->tree_deleted = root->tree_deleted || root->left_son_ptr->tree_downsample_deleted;
             root->left_son_ptr->point_deleted = root->left_son_ptr->tree_deleted || root->left_son_ptr->point_downsample_deleted;
-            if (root->tree_downsample_deleted) root->left_son_ptr->down_del_num = root->left_son_ptr->TreeSize;
-            if (root->tree_deleted) root->left_son_ptr->invalid_point_num = root->left_son_ptr->TreeSize;
-                else root->left_son_ptr->invalid_point_num = root->left_son_ptr->down_del_num;
+
+            // 更新无效点和被删除点的数量
+            if (root->tree_downsample_deleted)
+                root->left_son_ptr->down_del_num = root->left_son_ptr->TreeSize;
+            if (root->tree_deleted)
+                root->left_son_ptr->invalid_point_num = root->left_son_ptr->TreeSize;
+            else
+                root->left_son_ptr->invalid_point_num = root->left_son_ptr->down_del_num;
+
+            // 设置子节点也需要继续 push down
             root->left_son_ptr->need_push_down_to_left = true;
             root->left_son_ptr->need_push_down_to_right = true;
             root->need_push_down_to_left = false;                
         } else {
+            // 左子节点在重建中，需要加锁处理
             pthread_mutex_lock(&working_flag_mutex);
+
+            // 更新左子节点的删除状态
             root->left_son_ptr->tree_downsample_deleted |= root->tree_downsample_deleted;
             root->left_son_ptr->point_downsample_deleted |= root->tree_downsample_deleted;
             root->left_son_ptr->tree_deleted = root->tree_deleted || root->left_son_ptr->tree_downsample_deleted;
             root->left_son_ptr->point_deleted = root->left_son_ptr->tree_deleted || root->left_son_ptr->point_downsample_deleted;
-            if (root->tree_downsample_deleted) root->left_son_ptr->down_del_num = root->left_son_ptr->TreeSize;
-            if (root->tree_deleted) root->left_son_ptr->invalid_point_num = root->left_son_ptr->TreeSize;
-                else root->left_son_ptr->invalid_point_num = root->left_son_ptr->down_del_num;            
+
+            // 更新无效点和被删除点的数量
+            if (root->tree_downsample_deleted)
+                root->left_son_ptr->down_del_num = root->left_son_ptr->TreeSize;
+            if (root->tree_deleted)
+                root->left_son_ptr->invalid_point_num = root->left_son_ptr->TreeSize;
+            else
+                root->left_son_ptr->invalid_point_num = root->left_son_ptr->down_del_num;
+
+            // 设置子节点也需要继续 push down
             root->left_son_ptr->need_push_down_to_left = true;
             root->left_son_ptr->need_push_down_to_right = true;
+
+            // 如果处于重建状态，记录操作日志
             if (rebuild_flag){
                 pthread_mutex_lock(&rebuild_logger_mutex_lock);
                 Rebuild_Logger.push(operation);
                 pthread_mutex_unlock(&rebuild_logger_mutex_lock);
             }
+
             root->need_push_down_to_left = false;
             pthread_mutex_unlock(&working_flag_mutex);            
         }
     }
+
+    // 处理右子节点的 push down 操作
     if (root->need_push_down_to_right && root->right_son_ptr != nullptr){
+        // 如果右子节点不在重建过程中
         if (Rebuild_Ptr == nullptr || *Rebuild_Ptr != root->right_son_ptr){
+            // 更新右子节点的删除状态
             root->right_son_ptr->tree_downsample_deleted |= root->tree_downsample_deleted;
             root->right_son_ptr->point_downsample_deleted |= root->tree_downsample_deleted;
             root->right_son_ptr->tree_deleted = root->tree_deleted || root->right_son_ptr->tree_downsample_deleted;
             root->right_son_ptr->point_deleted = root->right_son_ptr->tree_deleted || root->right_son_ptr->point_downsample_deleted;
-            if (root->tree_downsample_deleted) root->right_son_ptr->down_del_num = root->right_son_ptr->TreeSize;
-            if (root->tree_deleted) root->right_son_ptr->invalid_point_num = root->right_son_ptr->TreeSize;
-                else root->right_son_ptr->invalid_point_num = root->right_son_ptr->down_del_num;
+
+            // 更新无效点和被删除点的数量
+            if (root->tree_downsample_deleted)
+                root->right_son_ptr->down_del_num = root->right_son_ptr->TreeSize;
+            if (root->tree_deleted)
+                root->right_son_ptr->invalid_point_num = root->right_son_ptr->TreeSize;
+            else
+                root->right_son_ptr->invalid_point_num = root->right_son_ptr->down_del_num;
+
+            // 设置子节点也需要继续 push down
             root->right_son_ptr->need_push_down_to_left = true;
             root->right_son_ptr->need_push_down_to_right = true;
             root->need_push_down_to_right = false;
         } else {
+            // 右子节点在重建中，需要加锁处理
             pthread_mutex_lock(&working_flag_mutex);
+
+            // 更新右子节点的删除状态
             root->right_son_ptr->tree_downsample_deleted |= root->tree_downsample_deleted;
             root->right_son_ptr->point_downsample_deleted |= root->tree_downsample_deleted;
             root->right_son_ptr->tree_deleted = root->tree_deleted || root->right_son_ptr->tree_downsample_deleted;
             root->right_son_ptr->point_deleted = root->right_son_ptr->tree_deleted || root->right_son_ptr->point_downsample_deleted;
-            if (root->tree_downsample_deleted) root->right_son_ptr->down_del_num = root->right_son_ptr->TreeSize;
-            if (root->tree_deleted) root->right_son_ptr->invalid_point_num = root->right_son_ptr->TreeSize;
-                else root->right_son_ptr->invalid_point_num = root->right_son_ptr->down_del_num;            
+
+            // 更新无效点和被删除点的数量
+            if (root->tree_downsample_deleted)
+                root->right_son_ptr->down_del_num = root->right_son_ptr->TreeSize;
+            if (root->tree_deleted)
+                root->right_son_ptr->invalid_point_num = root->right_son_ptr->TreeSize;
+            else
+                root->right_son_ptr->invalid_point_num = root->right_son_ptr->down_del_num;
+
+            // 设置子节点也需要继续 push down
             root->right_son_ptr->need_push_down_to_left = true;
             root->right_son_ptr->need_push_down_to_right = true;
+
+            // 如果处于重建状态，记录操作日志
             if (rebuild_flag){
                 pthread_mutex_lock(&rebuild_logger_mutex_lock);
                 Rebuild_Logger.push(operation);
                 pthread_mutex_unlock(&rebuild_logger_mutex_lock);
-            }            
+            }
+
             root->need_push_down_to_right = false;
             pthread_mutex_unlock(&working_flag_mutex);
         }
     }
+
     return;
 }
 

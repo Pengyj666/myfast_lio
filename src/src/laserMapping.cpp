@@ -92,7 +92,15 @@
  * 该宏定义用于设置数据发布的时间周期，单位为秒，
  * 控制数据发布的频率
  */
-#define PUBFRAME_PERIOD     (1)
+#define PUBFRAME_PERIOD     (20)
+
+/**
+ * @brief 激光点数量限制常量定义
+ * 
+ * 该宏定义用于设置激光点数量限制，用于控制数据处理中的点数量限制 多少个激光点同时处理
+ */
+
+#define NUM_SCAN 3
 
 /*** Time Log Variables ***/
 double kdtree_incremental_time = 0.0, kdtree_search_time = 0.0, kdtree_delete_time = 0.0;
@@ -122,7 +130,7 @@ double last_timestamp_lidar = 0, last_timestamp_imu = -1.0;
 double gyr_cov = 0.1, acc_cov = 0.1, b_gyr_cov = 0.0001, b_acc_cov = 0.0001;
 double filter_size_corner_min = 0, filter_size_surf_min = 0, filter_size_map_min = 0, fov_deg = 0;
 double cube_len = 0, HALF_FOV_COS = 0, FOV_DEG = 0, total_distance = 0, lidar_end_time = 0, first_lidar_time = 0.0;
-int    effct_feat_num = 0, time_log_counter = 0, scan_count = 0, publish_count = 0;
+int    effct_feat_num = 0, time_log_counter = 0, scan_count = 0, publish_count = 0 , num_scan = 0;
 int    iterCount = 0, feats_down_size = 0, NUM_MAX_ITERATIONS = 0, laserCloudValidNum = 0, pcd_save_interval = -1, pcd_index = 0;
 bool   point_selected_surf[100000] = {0};
 bool   lidar_pushed, flg_first_scan = true, flg_exit = false, flg_EKF_inited;
@@ -136,6 +144,12 @@ vector<double>       extrinT(3, 0.0);
 vector<double>       extrinR(9, 0.0);
 deque<double>                     time_buffer;
 deque<PointCloudXYZI::Ptr>        lidar_buffer;
+
+bool reduce_framerate = false;   // 是否降低帧率的标志变量
+deque<double>                     temp_time_buffer;
+deque<PointCloudXYZI::Ptr>        temp_lidar_buffer;
+
+
 deque<sensor_msgs::Imu::ConstPtr> imu_buffer;
 
 
@@ -423,7 +437,7 @@ void lasermap_fov_segment()
 
     // 计算移动距离
     float mov_dist = max((cube_len - 2.0 * MOV_THRESHOLD * DET_RANGE) * 0.5 * 0.9, double(DET_RANGE * (MOV_THRESHOLD -1)));
-
+ cout << "mov_dist " << mov_dist << endl;
     // 根据距离判断是否需要移动局部地图的各个边界，并记录需要删除的区域
     for (int i = 0; i < 3; i++){
         tmp_boxpoints = LocalMap_Points;
@@ -463,7 +477,7 @@ void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg)
 {
    
     // assert(msg->height == 1);
-      // 加锁保护共享数据缓冲区
+    // 加锁保护共享数据缓冲区
     mtx_buffer.lock();
     scan_count ++;
     double preprocess_start_time = omp_get_wtime();
@@ -475,14 +489,32 @@ void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg)
         lidar_buffer.clear();
     }
 
-// 在代码中添加调试输出
-// cout << "Debug: File=" << __FILE__ << ", Line=" << __LINE__ << ", Function=" << __FUNCTION__ << endl;
+    // 在代码中添加调试输出
+    // cout << "Debug: File=" << __FILE__ << ", Line=" << __LINE__ << ", Function=" << __FUNCTION__ << endl;
     // 创建新的点云对象并进行预处理
     PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
     p_pre->process(msg, ptr);
     // 将处理后的点云数据和时间戳存入缓冲区
-    lidar_buffer.push_back(ptr);
-    time_buffer.push_back(msg->header.stamp.toSec());
+    if(reduce_framerate){
+        if(num_scan == NUM_SCAN){
+            // 将临时缓冲区的数据追加到主缓冲区
+            lidar_buffer.insert(lidar_buffer.end(), temp_lidar_buffer.begin(), temp_lidar_buffer.end());
+            time_buffer.insert(time_buffer.end(), temp_time_buffer.begin(), temp_time_buffer.end());
+            
+            // 清空临时缓冲区
+            temp_lidar_buffer.clear();
+            temp_time_buffer.clear();
+            num_scan =0;
+        } else {
+            temp_lidar_buffer.push_back(ptr);
+            temp_time_buffer.push_back(msg->header.stamp.toSec());
+            num_scan ++;
+        }
+    }else{
+        lidar_buffer.push_back(ptr);
+        time_buffer.push_back(msg->header.stamp.toSec());
+    }
+    
     last_timestamp_lidar = msg->header.stamp.toSec();
     
     // 记录预处理耗时
@@ -1035,11 +1067,11 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         point_world.z = p_global(2);
         point_world.intensity = point_body.intensity;
 
-        vector<float> pointSearchSqDis(NUM_MATCH_POINTS);
+        vector<float> pointSearchSqDis(NUM_MATCH_POINTS); // 存储每个点到最近邻点的距离
 
         auto &points_near = Nearest_Points[i];
 
-        if (ekfom_data.converge)
+        if (ekfom_data.converge)  // 如果已经收敛，则使用最近邻点搜索
         {
             /** 在地图中查找最近的表面点 **/
             ikdtree.Nearest_Search(point_world, NUM_MATCH_POINTS, points_near, pointSearchSqDis);
@@ -1050,7 +1082,7 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 
         VF(4) pabcd;
         point_selected_surf[i] = false;
-        if (esti_plane(pabcd, points_near, 0.1f))
+        if (esti_plane(pabcd, points_near, 0.04f))
         {
             float pd2 = pabcd(0) * point_world.x + pabcd(1) * point_world.y + pabcd(2) * point_world.z + pabcd(3);
             float s = 1 - 0.9 * fabs(pd2) / sqrt(p_body.norm());
@@ -1136,8 +1168,6 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 void save_map_cbk(const std_msgs::Bool::ConstPtr &msg){
     string map_output_dir = root_dir + "/Lader_Map";
     mkdir(map_output_dir.c_str(), 0777);
-
-
   
     save_map = msg->data;
 
@@ -1162,20 +1192,8 @@ void save_map_cbk(const std_msgs::Bool::ConstPtr &msg){
  */
 void exportStaticMapExample() {
 
-    // if (save_map_file.is_open()){
-    //     // 遍历点云中的每个点并写入文件
-    //     for (size_t i = 0; i < feats_down_world->points.size(); ++i) {
-    //         save_map_file << fixed << setprecision(6) 
-    //             << feats_down_world->points[i].x << " " 
-    //             << feats_down_world->points[i].y << " " 
-    //             << feats_down_world->points[i].z << " " 
-    //             << feats_down_world->points[i].intensity << "\n";
-    //         //         ROS_INFO("Saved full map to feats_down_world->points[i].x = %f  feats_down_world->points[i].y = %f feats_down_world->points[i].z = %f feats_down_world->points[i].intensity = %f",
-    //         // feats_down_world->points[i].x, feats_down_world->points[i].y,feats_down_world->points[i].z,feats_down_world->points[i].intensity);
-    //     }
-    // }
-
     if (save_map_file.is_open()) {
+        #if 1
         // 使用字符串流预处理所有数据
         stringstream ss;
         ss << fixed << setprecision(6);
@@ -1190,6 +1208,7 @@ void exportStaticMapExample() {
         // 一次性写入所有数据
         save_map_file << ss.str();
         save_map_file.flush(); // 确保数据写入磁盘
+        #endif
     }
 }
 
@@ -1294,6 +1313,17 @@ int main(int argc, char** argv)
     p_imu->lidar_type = lidar_type;
     double epsi[23] = {0.001};
     fill(epsi, epsi+23, 0.001);
+    /*
+     * init_dyn_share - 初始化卡尔曼滤波器的动态共享参数
+     * 
+     * 参数说明:
+     * get_f - 状态转移函数
+     * df_dx - 状态转移矩阵的雅可比矩阵
+     * df_dw - 过程噪声矩阵的雅可比矩阵
+     * h_share_model - 观测共享模型
+     * NUM_MAX_ITERATIONS - 最大迭代次数
+     * epsi - 收敛阈值
+     */
     kf.init_dyn_share(get_f, df_dx, df_dw, h_share_model, NUM_MAX_ITERATIONS, epsi);
 
     /*** 调试日志文件初始化 ***/
@@ -1474,7 +1504,7 @@ int main(int argc, char** argv)
             if (scan_pub_en && scan_body_pub_en) publish_frame_body(pubLaserCloudFull_body);
             // publish_effect_world(pubLaserCloudEffect);
             // publish_map(pubLaserCloudMap);
-            //if(save_map)                         exportStaticMapExample(); 
+            if(save_map)                         exportStaticMapExample(); 
 
             /*** 调试变量记录 ***/
             if (runtime_pos_log)
@@ -1555,25 +1585,25 @@ int main(int argc, char** argv)
     }
 
                  
-            // 保存时间日志
-            if (runtime_pos_log)
-            {
-                vector<double> t, s_vec, s_vec2, s_vec3, s_vec4, s_vec5, s_vec6, s_vec7;    
-                FILE *fp2;
-                string log_dir = root_dir + "/Log/fast_lio_time_log.csv";
-                fp2 = fopen(log_dir.c_str(),"w+");
-                fprintf(fp2,"time_stamp, total time, scan point size, incremental time, search time, delete size, delete time, tree size st, tree size end, add point size, preprocess time\n");
-                for (int i = 0;i<time_log_counter; i++){
-                    //s_plot11   雷达入参预处理耗时
-                    fprintf(fp2,"%0.8f,%0.8f,%d,%0.8f,%0.8f,%d,%0.8f,%d,%d,%d,%0.8f\n",T1[i],s_plot[i],int(s_plot2[i]),s_plot3[i],s_plot4[i],int(s_plot5[i]),s_plot6[i],int(s_plot7[i]),int(s_plot8[i]), int(s_plot10[i]), s_plot11[i]);
-                    t.push_back(T1[i]);
-                    s_vec.push_back(s_plot9[i]);
-                    s_vec2.push_back(s_plot3[i] + s_plot6[i]);
-                    s_vec3.push_back(s_plot4[i]);
-                    s_vec5.push_back(s_plot[i]);
-                }
-                fclose(fp2);
+        // 保存时间日志
+        if (runtime_pos_log)
+        {
+            vector<double> t, s_vec, s_vec2, s_vec3, s_vec4, s_vec5, s_vec6, s_vec7;    
+            FILE *fp2;
+            string log_dir = root_dir + "/Log/fast_lio_time_log.csv";
+            fp2 = fopen(log_dir.c_str(),"w+");
+            fprintf(fp2,"time_stamp, total time, scan point size, incremental time, search time, delete size, delete time, tree size st, tree size end, add point size, preprocess time\n");
+            for (int i = 0;i<time_log_counter; i++){
+                //s_plot11   雷达入参预处理耗时
+                fprintf(fp2,"%0.8f,%0.8f,%d,%0.8f,%0.8f,%d,%0.8f,%d,%d,%d,%0.8f\n",T1[i],s_plot[i],int(s_plot2[i]),s_plot3[i],s_plot4[i],int(s_plot5[i]),s_plot6[i],int(s_plot7[i]),int(s_plot8[i]), int(s_plot10[i]), s_plot11[i]);
+                t.push_back(T1[i]);
+                s_vec.push_back(s_plot9[i]);
+                s_vec2.push_back(s_plot3[i] + s_plot6[i]);
+                s_vec3.push_back(s_plot4[i]);
+                s_vec5.push_back(s_plot[i]);
             }
+            fclose(fp2);
+        }
         
 
 

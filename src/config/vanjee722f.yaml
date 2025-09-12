@@ -16,9 +16,9 @@ preprocess:
 # 该配置定义了IMU噪声参数、LiDAR观测范围以及IMU-LiDAR外参设置
 mapping:
     # IMU加速度计噪声协方差
-    acc_cov: 0.05
+    acc_cov: 0.1
     # IMU陀螺仪噪声协方差
-    gyr_cov: 0.05
+    gyr_cov: 0.1
     # IMU加速度计偏置噪声协方差
     b_acc_cov: 0.0001
     # IMU陀螺仪偏置噪声协方差
