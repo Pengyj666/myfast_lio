@@ -1,2 +1,0 @@
-.
--DCATKIN_DEVEL_PREFIX=/home/edy/code/githubSlam/FAST_LIO/devel -DCMAKE_INSTALL_PREFIX=/home/edy/code/githubSlam/FAST_LIO/install -G Unix Makefiles

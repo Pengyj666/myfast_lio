@@ -1185,20 +1185,44 @@ void KD_TREE<PointType>::Search(KD_TREE_NODE * root, int k_nearest, PointType po
     }
     return;
 }
+/**
+ * @brief 在KD树中搜索指定范围内的所有点
+ * 
+ * 该函数通过递归遍历KD树，查找所有位于给定包围盒(boxpoint)内的点，并将这些点存储到Storage中。
+ * 搜索过程中会跳过被删除的节点，并处理可能正在重建的子树（使用互斥锁保护）。
+ * 
+ * @tparam PointType 点的类型，需包含x, y, z坐标
+ * @param root KD树的根节点指针
+ * @param boxpoint 搜索范围的包围盒，包含vertex_min和vertex_max两个顶点
+ * @param Storage 用于存储搜索结果的点向量引用
+ */
 template <typename PointType>
 void KD_TREE<PointType>::Search_by_range(KD_TREE_NODE *root, BoxPointType boxpoint, PointVector & Storage){
+    // 空节点直接返回
     if (root == nullptr) return;
+    
+    // 下推操作，确保节点状态正确
     Push_Down(root);       
+    
+    // 检查包围盒在X轴上是否与节点范围相交，不相交则返回
     if (boxpoint.vertex_max[0] <= root->node_range_x[0] || boxpoint.vertex_min[0] > root->node_range_x[1]) return;
+    // 检查包围盒在Y轴上是否与节点范围相交，不相交则返回
     if (boxpoint.vertex_max[1] <= root->node_range_y[0] || boxpoint.vertex_min[1] > root->node_range_y[1]) return;
+    // 检查包围盒在Z轴上是否与节点范围相交，不相交则返回
     if (boxpoint.vertex_max[2] <= root->node_range_z[0] || boxpoint.vertex_min[2] > root->node_range_z[1]) return;
+    
+    // 如果包围盒完全包含当前节点的范围，则将整个子树展平添加到结果中
     if (boxpoint.vertex_min[0] <= root->node_range_x[0] && boxpoint.vertex_max[0] > root->node_range_x[1] && boxpoint.vertex_min[1] <= root->node_range_y[0] && boxpoint.vertex_max[1] > root->node_range_y[1] && boxpoint.vertex_min[2] <= root->node_range_z[0] && boxpoint.vertex_max[2] > root->node_range_z[1]){
         flatten(root, Storage, NOT_RECORD);
         return;
     }
+    
+    // 检查当前节点的点是否在搜索范围内，如果在且未被删除则添加到结果中
     if (boxpoint.vertex_min[0] <= root->point.x && boxpoint.vertex_max[0] > root->point.x && boxpoint.vertex_min[1] <= root->point.y && boxpoint.vertex_max[1] > root->point.y && boxpoint.vertex_min[2] <= root->point.z && boxpoint.vertex_max[2] > root->point.z){
         if (!root->point_deleted) Storage.push_back(root->point);
     }
+    
+    // 递归搜索左子树，如果子树正在重建则加锁保护
     if ((Rebuild_Ptr == nullptr) || root->left_son_ptr != *Rebuild_Ptr){
         Search_by_range(root->left_son_ptr, boxpoint, Storage);
     } else {
@@ -1206,6 +1230,8 @@ void KD_TREE<PointType>::Search_by_range(KD_TREE_NODE *root, BoxPointType boxpoi
         Search_by_range(root->left_son_ptr, boxpoint, Storage);
         pthread_mutex_unlock(&search_flag_mutex);
     }
+    
+    // 递归搜索右子树，如果子树正在重建则加锁保护
     if ((Rebuild_Ptr == nullptr) || root->right_son_ptr != *Rebuild_Ptr){
         Search_by_range(root->right_son_ptr, boxpoint, Storage);
     } else {
@@ -1213,6 +1239,7 @@ void KD_TREE<PointType>::Search_by_range(KD_TREE_NODE *root, BoxPointType boxpoi
         Search_by_range(root->right_son_ptr, boxpoint, Storage);
         pthread_mutex_unlock(&search_flag_mutex);
     }
+    
     return;    
 }
 

@@ -20,7 +20,7 @@ Q_LEN：队列最大长度（1000000）
 */
 #define EPSS 1e-6
 #define Minimal_Unbalanced_Tree_Size 10
-#define Multi_Thread_Rebuild_Point_Num 1500
+#define Multi_Thread_Rebuild_Point_Num 1000
 #define DOWNSAMPLE_SWITCH true
 #define ForceRebuildPercentage 0.2
 #define Q_LEN 1000000
@@ -199,9 +199,12 @@ private:
     // KD Tree Functions and augmented variables
     int Treesize_tmp = 0, Validnum_tmp = 0;
     float alpha_bal_tmp = 0.5, alpha_del_tmp = 0.0;
-    float delete_criterion_param = 0.5f;
+    // 删除准则参数，用于控制节点删除的阈值条件
+    float delete_criterion_param = 0.3f;
+    
+    // 平衡准则参数，用于控制树结构平衡的权重系数
     float balance_criterion_param = 0.7f;
-    float downsample_size = 0.2f;
+    float downsample_size = 0.2f; // 下采样体素大小
     bool Delete_Storage_Disabled = false;
     KD_TREE_NODE * STATIC_ROOT_NODE = nullptr;
     PointVector Points_deleted;
