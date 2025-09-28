@@ -1,0 +1,49 @@
+common:
+    lid_topic:  "/vanjee_points722f"
+    imu_topic:  "/vanjee_lidar_imu_packets"
+    time_sync_en: false         # ONLY turn on when external time synchronization is really not possible
+    time_offset_lidar_to_imu: 0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
+                                  # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
+
+preprocess:
+    lidar_type: 5                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 5 for WLR722F LiDAR
+    scan_line: 16
+    scan_rate: 10                # only need to be set for velodyne, unit: Hz, WLR722F频率是20Hz（每60秒1200转）
+    timestamp_unit: 3            # PointCloud2 rostopic中的时间/t字段的单位:0秒、1毫秒、2微秒、3纳秒。
+    blind: 0.2             # 激光雷达盲区，单位：米         vanjee 722f   0.05  
+
+# IMU和LiDAR传感器配置参数映射表
+# 该配置定义了IMU噪声参数、LiDAR观测范围以及IMU-LiDAR外参设置
+mapping:
+    # IMU加速度计噪声协方差
+    acc_cov: 0.1
+    # IMU陀螺仪噪声协方差
+    gyr_cov: 0.1
+    # IMU加速度计偏置噪声协方差
+    b_acc_cov: 0.0001
+    # IMU陀螺仪偏置噪声协方差
+    b_gyr_cov: 0.0001
+    # LiDAR视场角(度)
+    fov_degree:    360
+    # LiDAR最大探测距离(米)
+    det_range:     50.0
+    # 是否启用IMU-LiDAR外参在线估计
+    extrinsic_est_en:  false
+    # IMU到LiDAR的平移外参[Tx, Ty, Tz](米)
+    extrinsic_T: [ 0, 0, 0]
+    # IMU到LiDAR的旋转外参(3x3旋转矩阵按行展开)
+    extrinsic_R: [ 1, 0, 0, 
+                   0, 1, 0, 
+                   0, 0, 1]
+
+publish:
+    path_en:  false
+    scan_publish_en:  true       # false: close all the point cloud output   false: close all the point cloud output False：关闭所有点云输出False：关闭所有点云输出
+    dense_publish_en: true       # false: low down the points number in a global-frame point clouds scan.  False：降低全局框架点云扫描中的点数。
+    scan_bodyframe_pub_en: false  # true: output the point cloud scans in IMU-body-frame   True：输出IMU-Body-Frame中的点云扫描
+
+pcd_save:
+    pcd_save_en: false
+    interval: -1                # how many LiDAR frames saved in each pcd file; 
+                                 # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
+    save_map: false       #  是否保存地图的标志变量

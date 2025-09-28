@@ -36,7 +36,6 @@
 #include <mutex>
 #include <math.h>
 #include <thread>
-#include <fstream>
 #include <csignal>
 #include <unistd.h>
 #include <Python.h>
@@ -60,8 +59,10 @@
 #include <std_msgs/Bool.h>
 #include "preprocess.h"
 #include <fstream>
-
-#include "ikd-Tree/ikd_Tree.h" 
+#include <pcl/registration/icp.h>
+#include <pcl/registration/sample_consensus_prerejective.h>
+#include "ikd-Tree/ikd_Tree.h"
+// #include "fast_lio_localization.hpp" 
 
 /**
  * @brief 初始化时间常量定义
@@ -82,7 +83,7 @@
  * @brief 最大数量限制常量定义
  * 
  * 该宏定义用于设置系统中可处理的最大数据点数量，
- * 用于内存分配和数组大小限制
+ * 用于内存分配和数组大小限制   
  */
 #define MAXN                (720000)
 
@@ -92,7 +93,17 @@
  * 该宏定义用于设置数据发布的时间周期，单位为秒，
  * 控制数据发布的频率
  */
-#define PUBFRAME_PERIOD     (1)
+#define PUBFRAME_PERIOD     (20)
+
+/**
+ * @brief 激光点数量限制常量定义
+ * 
+ * 该宏定义用于设置激光点数量限制，用于控制数据处理中的点数量限制 多少个激光点同时处理
+ */
+
+#define NUM_SCAN 3
+
+#define localization 0
 
 /*** Time Log Variables ***/
 double kdtree_incremental_time = 0.0, kdtree_search_time = 0.0, kdtree_delete_time = 0.0;
@@ -105,14 +116,17 @@ bool   runtime_pos_log = true, pcd_save_en = false, time_sync_en = false, extrin
 
 float res_last[100000] = {0.0};
 // 检测范围定义，用于确定物体检测的最大距离
-float DET_RANGE = 300.0f;
+float DET_RANGE = 50.0f;
 
 // 移动阈值常量，用于判断物体是否发生移动的最小距离标准
-const float MOV_THRESHOLD = 1.5f;
+const float MOV_THRESHOLD = 0.5f;
 double time_diff_lidar_to_imu = 0.0;
 
 mutex mtx_buffer;
 condition_variable sig_buffer;
+
+mutex txt_save_mutex;
+PointCloudXYZI::Ptr accumulated_cloud(new PointCloudXYZI());
 
 string root_dir = ROOT_DIR;
 string map_file_path, lid_topic, imu_topic;
@@ -122,11 +136,12 @@ double last_timestamp_lidar = 0, last_timestamp_imu = -1.0;
 double gyr_cov = 0.1, acc_cov = 0.1, b_gyr_cov = 0.0001, b_acc_cov = 0.0001;
 double filter_size_corner_min = 0, filter_size_surf_min = 0, filter_size_map_min = 0, fov_deg = 0;
 double cube_len = 0, HALF_FOV_COS = 0, FOV_DEG = 0, total_distance = 0, lidar_end_time = 0, first_lidar_time = 0.0;
-int    effct_feat_num = 0, time_log_counter = 0, scan_count = 0, publish_count = 0;
+int    effct_feat_num = 0, time_log_counter = 0, scan_count = 0, publish_count = 0 , num_scan = 0;
 int    iterCount = 0, feats_down_size = 0, NUM_MAX_ITERATIONS = 0, laserCloudValidNum = 0, pcd_save_interval = -1, pcd_index = 0;
+int    txt_save_interval = 2; // 保存txt文件的间隔
 bool   point_selected_surf[100000] = {0};
 bool   lidar_pushed, flg_first_scan = true, flg_exit = false, flg_EKF_inited;
-bool   scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
+bool   scan_pub_en = true, dense_pub_en = false, scan_body_pub_en = true;
 int lidar_type;
 
 vector<vector<int>>  pointSearchInd_surf; 
@@ -136,11 +151,20 @@ vector<double>       extrinT(3, 0.0);
 vector<double>       extrinR(9, 0.0);
 deque<double>                     time_buffer;
 deque<PointCloudXYZI::Ptr>        lidar_buffer;
+
+bool reduce_framerate = false;   // 是否降低帧率的标志变量
+deque<double>                     temp_time_buffer;
+deque<PointCloudXYZI::Ptr>        temp_lidar_buffer;
+
+
 deque<sensor_msgs::Imu::ConstPtr> imu_buffer;
 
 
-bool   save_map = true; // 是否保存地图的标志变量
+bool   save_map = false; // 是否保存地图的标志变量
 ofstream save_map_file; // 用于保存地图数据的文件流对象
+
+bool init_flag = false;
+Eigen::Matrix4f pose_tf = Eigen::Matrix4f::Identity();
 
 /**
  * @brief 从地图中提取的特征点云
@@ -423,7 +447,7 @@ void lasermap_fov_segment()
 
     // 计算移动距离
     float mov_dist = max((cube_len - 2.0 * MOV_THRESHOLD * DET_RANGE) * 0.5 * 0.9, double(DET_RANGE * (MOV_THRESHOLD -1)));
-
+ cout << "mov_dist " << mov_dist << endl;
     // 根据距离判断是否需要移动局部地图的各个边界，并记录需要删除的区域
     for (int i = 0; i < 3; i++){
         tmp_boxpoints = LocalMap_Points;
@@ -463,7 +487,7 @@ void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg)
 {
    
     // assert(msg->height == 1);
-      // 加锁保护共享数据缓冲区
+    // 加锁保护共享数据缓冲区
     mtx_buffer.lock();
     scan_count ++;
     double preprocess_start_time = omp_get_wtime();
@@ -474,15 +498,31 @@ void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg)
         ROS_ERROR("lidar loop back, clear buffer");
         lidar_buffer.clear();
     }
-
-// 在代码中添加调试输出
-// cout << "Debug: File=" << __FILE__ << ", Line=" << __LINE__ << ", Function=" << __FUNCTION__ << endl;
+    // cout << "Debug: File=" << __FILE__ << ", Line=" << __LINE__ << ", Function=" << __FUNCTION__ << endl;
     // 创建新的点云对象并进行预处理
     PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
     p_pre->process(msg, ptr);
     // 将处理后的点云数据和时间戳存入缓冲区
-    lidar_buffer.push_back(ptr);
-    time_buffer.push_back(msg->header.stamp.toSec());
+    if(reduce_framerate){
+        if(num_scan == NUM_SCAN){
+            // 将临时缓冲区的数据追加到主缓冲区
+            lidar_buffer.insert(lidar_buffer.end(), temp_lidar_buffer.begin(), temp_lidar_buffer.end());
+            time_buffer.insert(time_buffer.end(), temp_time_buffer.begin(), temp_time_buffer.end());
+            
+            // 清空临时缓冲区
+            temp_lidar_buffer.clear();
+            temp_time_buffer.clear();
+            num_scan =0;
+        } else {
+            temp_lidar_buffer.push_back(ptr);
+            temp_time_buffer.push_back(msg->header.stamp.toSec());
+            num_scan ++;
+        }
+    }else{
+        lidar_buffer.push_back(ptr);
+        time_buffer.push_back(msg->header.stamp.toSec());
+    }
+    
     last_timestamp_lidar = msg->header.stamp.toSec();
     
     // 记录预处理耗时
@@ -728,6 +768,12 @@ void map_incremental()
 
             float dist  = calc_dist(feats_down_world->points[i],mid_point);
 
+            // 增加距离阈值判断，避免添加过多近邻点
+            if (dist > filter_size_map_min * 0.8) {
+                PointToAdd.push_back(feats_down_world->points[i]);
+                continue;
+            }
+
             // 如果最近邻点与当前网格中心距离过大，则不需要下采样，直接保留
             if (fabs(points_near[0].x - mid_point.x) > 0.5 * filter_size_map_min && 
                 fabs(points_near[0].y - mid_point.y) > 0.5 * filter_size_map_min && 
@@ -758,10 +804,20 @@ void map_incremental()
 
     // 将筛选后的点增量式地添加到KD树中并统计时间
     double st_time = omp_get_wtime();
-    add_point_size = ikdtree.Add_Points(PointToAdd, true);
-    ikdtree.Add_Points(PointNoNeedDownsample, true); 
-    add_point_size = PointToAdd.size() + PointNoNeedDownsample.size();
+    add_point_size = ikdtree.Add_Points(PointToAdd, false);
+    ikdtree.Add_Points(PointNoNeedDownsample, false); 
+    //add_point_size = PointToAdd.size() + PointNoNeedDownsample.size();
     kdtree_incremental_time = omp_get_wtime() - st_time;
+
+    // if(save_map){
+    //     std::lock_guard<std::mutex> lock(txt_save_mutex);
+    //     for (const auto& point : PointToAdd) {
+    //         accumulated_cloud->push_back(point);
+    //     }
+    //     for (const auto& point : PointNoNeedDownsample) {
+    //         accumulated_cloud->push_back(point);
+    //     }
+    // }
 }
 
 PointCloudXYZI::Ptr pcl_wait_pub(new PointCloudXYZI(500000, 1));
@@ -780,7 +836,7 @@ void publish_frame_world(const ros::Publisher & pubLaserCloudFull)
     // 如果允许发布点云数据
     if(scan_pub_en)
     {
-        // cout << "publish frame at: " << static_cast<long long>(lidar_end_time * 1e6) << " microseconds" << endl;
+        cout << "publish frame at: " << static_cast<long long>(lidar_end_time * 1e6) << " microseconds" << endl;
 
         // ros::Time current_time = ros::Time::now();
         // ROS_INFO("Current ROS time: %f", current_time.toSec());
@@ -792,10 +848,28 @@ void publish_frame_world(const ros::Publisher & pubLaserCloudFull)
                         new PointCloudXYZI(size, 1));
 
         // 将每个点从机体坐标系转换到世界坐标系
-        for (int i = 0; i < size; i++)
-        {
-            RGBpointBodyToWorld(&laserCloudFullRes->points[i], \
-                                &laserCloudWorld->points[i]);
+        if (init_flag) {
+            // 使用pose_tf进行坐标变换
+            for (int i = 0; i < size; i++) {
+                PointType point_body = laserCloudFullRes->points[i];
+                
+                // 构造齐次坐标
+                Eigen::Vector4f point_homo(point_body.x, point_body.y, point_body.z, 1.0);
+                
+                // 应用变换矩阵
+                Eigen::Vector4f point_transformed = pose_tf * point_homo;
+                
+                // 填充到世界坐标系点云
+                laserCloudWorld->points[i].x = point_transformed(0);
+                laserCloudWorld->points[i].y = point_transformed(1);
+                laserCloudWorld->points[i].z = point_transformed(2);
+                laserCloudWorld->points[i].intensity = point_body.intensity;
+            }
+        } else {
+            for (int i = 0; i < size; i++) {
+                RGBpointBodyToWorld(&laserCloudFullRes->points[i], 
+                                   &laserCloudWorld->points[i]);
+            }
         }
 
         // 构造ROS点云消息并发布
@@ -1050,7 +1124,7 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 
         VF(4) pabcd;
         point_selected_surf[i] = false;
-        if (esti_plane(pabcd, points_near, 0.1f))
+        if (esti_plane(pabcd, points_near, 0.05f))
         {
             float pd2 = pabcd(0) * point_world.x + pabcd(1) * point_world.y + pabcd(2) * point_world.z + pabcd(3);
             float s = 1 - 0.9 * fabs(pd2) / sqrt(p_body.norm());
@@ -1144,7 +1218,7 @@ void save_map_cbk(const std_msgs::Bool::ConstPtr &msg){
     if(save_map){
         string map_filename = root_dir + "src/StaticMap/static_map.txt";
 
-        save_map_file.open(map_filename, ios::out | ios::trunc); // 以覆盖模式打开文件
+        save_map_file.open(map_filename, ios::out | ios::app); // app追加的形式   以覆盖模式打开文件ios::trunc)
 
         
         if (!save_map_file.is_open()) {
@@ -1156,27 +1230,17 @@ void save_map_cbk(const std_msgs::Bool::ConstPtr &msg){
     }
 
 }
+
+
 /**
  * @brief 在主循环中调用的地图保存函数示例
  * 
  */
 void exportStaticMapExample() {
-
-    // if (save_map_file.is_open()){
-    //     // 遍历点云中的每个点并写入文件
-    //     for (size_t i = 0; i < feats_down_world->points.size(); ++i) {
-    //         save_map_file << fixed << setprecision(6) 
-    //             << feats_down_world->points[i].x << " " 
-    //             << feats_down_world->points[i].y << " " 
-    //             << feats_down_world->points[i].z << " " 
-    //             << feats_down_world->points[i].intensity << "\n";
-    //         //         ROS_INFO("Saved full map to feats_down_world->points[i].x = %f  feats_down_world->points[i].y = %f feats_down_world->points[i].z = %f feats_down_world->points[i].intensity = %f",
-    //         // feats_down_world->points[i].x, feats_down_world->points[i].y,feats_down_world->points[i].z,feats_down_world->points[i].intensity);
-    //     }
-    // }
-
     if (save_map_file.is_open()) {
+        #if 0
         // 使用字符串流预处理所有数据
+        std::lock_guard<std::mutex> lock(txt_save_mutex);
         stringstream ss;
         ss << fixed << setprecision(6);
         
@@ -1190,13 +1254,153 @@ void exportStaticMapExample() {
         // 一次性写入所有数据
         save_map_file << ss.str();
         save_map_file.flush(); // 确保数据写入磁盘
+        #endif
+
+
+    }     
+
+    #if 1
+    std::lock_guard<std::mutex> lock(txt_save_mutex);
+    int size = feats_undistort->points.size();
+    // 创建用于存储世界坐标系下点云的新点云对象
+    PointCloudXYZI::Ptr laserCloudWorld( \
+                    new PointCloudXYZI(size, 1));
+
+    // 将每个点从机体坐标系转换到世界坐标系
+    for (int i = 0; i < size; i++)
+    {
+        RGBpointBodyToWorld(&feats_undistort->points[i], \
+                            &laserCloudWorld->points[i]);
     }
+
+    // 将转换后的点云累加到等待保存的点云中
+    *accumulated_cloud += *laserCloudWorld;
+
+
+    #endif
+}
+PointCloudXYZI::Ptr down_map(new PointCloudXYZI()); 
+/**
+ * @brief 即时点，将点云从雷达坐标系转换到世界坐标系，并保存到点云中
+ * 
+ */
+bool loadExistingMap() {
+    string map_file_path = string(ROOT_DIR) + "/PCD/accumulated_map.pcd";
+    
+    // 检查地图文件是否存在
+    ifstream file(map_file_path);
+    if (!file.good()) {
+        cout << "No existing map found at: " << map_file_path << endl;
+        return false;
+    }
+    file.close();
+    
+    // 加载点云地图
+    PointCloudXYZI::Ptr map_cloud(new PointCloudXYZI());
+    if (pcl::io::loadPCDFile<PointType>(map_file_path, *map_cloud) != 0) {
+        cout << "Failed to load map from: " << map_file_path << endl;
+        return false;
+    }
+
+
+    
+    // 创建体素网格滤波器并执行下采样
+    pcl::VoxelGrid<PointType> sor; 
+    sor.setInputCloud(map_cloud); 
+    sor.setLeafSize(0.4, 0.4, 0.4);
+    sor.filter(*down_map);
+
+
+    cout << "Successfully loaded map with " << map_cloud->size() << " points" << endl;
+    // ikdtree.set_downsample_param(filter_size_map_min);
+
+    // ikdtree.Build(down_map->points);
+    
+    return true;
 }
 
 
+bool lidarLocalization(){
+    #if localization
+
+    if (!init_flag) { 
+            /*60秒时候的位姿
+            position: 
+            x: 8.605346800971496
+            y: -7.8000119416576394
+            z: 2.9070033479885584
+            orientation: 
+            x: 0.015169017370231281
+            y: 0.35820880499712554
+            z: 0.9329845567919434
+            w: 0.031562156489285384
+        */
+        // //如参初始位姿估计 ，  可以由GPS给
+        float x=8.605346800971496, y=-7.8000119416576394, z=2.9070033479885584, roll=0.0, pitch=0.0, yaw=0.0;
+        // 创建四元数（从欧拉角转换）
+        // tf2::Quaternion quat_tf2;
+        // quat_tf2.setRPY(roll, pitch, yaw);
+        // Eigen::Quaternionf eigen_quat(quat_tf2.w(), quat_tf2.x(), quat_tf2.y(), quat_tf2.z());
+
+        Eigen::Quaternionf eigen_quat(0.031562156489285384, 
+                                        0.015169017370231281,  
+                                        0.35820880499712554,   
+                                        0.9329845567919434);
 
 
+        // 创建4x4位姿变换矩阵
+        Eigen::Matrix4f pose_estimation = Eigen::Matrix4f::Identity();
 
+        // 设置平移部分（来自state_point的位置）
+        pose_estimation(0, 3) = x;
+        pose_estimation(1, 3) = y;
+        pose_estimation(2, 3) = z;
+
+        
+
+        Eigen::Matrix3f rotation = eigen_quat.toRotationMatrix();
+
+        // 设置旋转部分
+        pose_estimation.block<3,3>(0,0) = rotation;
+
+        // // IMU预积分处理
+        // p_imu->Process(Measures, kf, feats_undistort);
+        // state_point = kf.get_x();
+        // if (feats_undistort->empty() || (feats_undistort == NULL))
+        // {
+        //     ROS_WARN("IMU No point, skip this scan!\n");
+        //     return false;
+        // }
+
+        int size = feats_undistort->points.size();
+        PointCloudXYZI::Ptr laserCloudWorld( \
+                        new PointCloudXYZI(size, 1));
+
+        for (int i = 0; i < size; i++)
+        {
+            RGBpointBodyToWorld(&feats_undistort->points[i], \
+                                &laserCloudWorld->points[i]);
+        }
+
+        init_localization(laserCloudWorld,filter_size_map_min,filter_size_surf_min,fov_deg,down_map);
+        auto localization_resl =globalLocalization(state_point, geoQuat,pose_estimation);
+        if(localization_resl.second){
+            init_flag = true;
+            pose_tf = localization_resl.first;
+        }
+
+        cout<<"pose_estimation: \n"<<pose_estimation(0,3)<< pose_estimation(1,3)<<endl;
+        cout<<"geoQuat: "<<geoQuat.x<<" "<<geoQuat.y<<" "<<geoQuat.z<<" "<<geoQuat.w<<endl;
+        cout<<"state_point.pos: "<<state_point.pos.transpose()<<endl;
+        cout<<"state_point.rot: \n"<<state_point.rot.matrix()<<endl;
+    }else{
+        globalLocalization(state_point, geoQuat);
+    }
+
+    return true;
+    #endif
+
+}
 
 /**
  * @brief 主函数，负责初始化ROS节点、加载参数、订阅传感器数据并执行激光雷达SLAM主循环。
@@ -1256,6 +1460,7 @@ int main(int argc, char** argv)
     nh.param<bool>("mapping/extrinsic_est_en", extrinsic_est_en, true);
     nh.param<bool>("pcd_save/pcd_save_en", pcd_save_en, true);
     nh.param<int>("pcd_save/interval", pcd_save_interval, -1);
+    nh.param<bool>("pcd_save/save_map", save_map, false);
     nh.param<vector<double>>("mapping/extrinsic_T", extrinT, vector<double>());
     nh.param<vector<double>>("mapping/extrinsic_R", extrinR, vector<double>());
 
@@ -1333,13 +1538,14 @@ int main(int argc, char** argv)
 
     string map_filename = root_dir + "src/StaticMap/static_map.txt";
 
-    save_map_file.open(map_filename, ios::out | ios::trunc);
+    save_map_file.open(map_filename, ios::out | ios::app);
 
     
     if (!save_map_file.is_open()) {
         ROS_ERROR("Cannot open file %s for writing point cloud data", map_filename.c_str());
         return 0;
     }
+    //bool loadMap = loadExistingMap();
 //------------------------------------------------------------------------------------------------------
     signal(SIGINT, SigHandle);
     ros::Rate rate(5000);
@@ -1350,17 +1556,36 @@ int main(int argc, char** argv)
     {   
         if (flg_exit) break;
         ros::spinOnce();
-        //cout<<  Measures.imu.size() <<endl;
         // 同步激光雷达和IMU数据包
         if(sync_packages(Measures)) //拿到雷达结束前时间段内的所有imu数据
         {
-            if (flg_first_scan)
+            if(flg_first_scan){
+                p_imu->Reset();
+                Measures.imu.clear();
+                flg_first_scan = false;
+                continue;   
+            }
+
+            // IMU预积分处理
+            p_imu->Process(Measures, kf, feats_undistort);
+
+            state_point = kf.get_x();
+
+            pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
+
+            if (feats_undistort->empty() || (feats_undistort == NULL))
             {
+                ROS_WARN("IMU No point, skip this scan!\n");
                 first_lidar_time = Measures.lidar_beg_time;
                 p_imu->first_lidar_time = first_lidar_time;
-                flg_first_scan = false;
                 continue;
             }
+
+            flg_EKF_inited = (Measures.lidar_beg_time - first_lidar_time) < INIT_TIME ? \
+                            false : true;
+            // if(loadMap){
+            //     lidarLocalization();
+            // }
 
             double t0,t1,t2,t3,t4,t5,match_start, solve_start, svd_time;
 
@@ -1370,22 +1595,6 @@ int main(int argc, char** argv)
             solve_const_H_time = 0;
             svd_time   = 0;
             t0 = omp_get_wtime();
-
-            // IMU预积分处理
-            p_imu->Process(Measures, kf, feats_undistort);
- 
-            state_point = kf.get_x();
-
-            pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
-
-            if (feats_undistort->empty() || (feats_undistort == NULL))
-            {
-                ROS_WARN("IMU No point, skip this scan!\n");
-                continue;
-            }
-
-            flg_EKF_inited = (Measures.lidar_beg_time - first_lidar_time) < INIT_TIME ? \
-                            false : true;
 
             /*** 根据激光雷达视场角分割地图 ***/
             lasermap_fov_segment();
@@ -1415,13 +1624,18 @@ int main(int argc, char** argv)
             kdtree_size_st = ikdtree.size();
             
             // cout<<"[ mapping ]: In num: "<<feats_undistort->points.size()<<" downsamp "<<feats_down_size<<" Map num: "<<featsFromMapNum<<"effect num:"<<effct_feat_num<<endl;
-            // cout<<"[ mapping ]: kdtree_size: "<<kdtree_size_st<<" effct_feat_num: "<<effct_feat_num<<" time: "<<t1-t0<<endl;
+            cout<<"[ mapping ]: kdtree_size: "<<kdtree_size_st<<endl;
             /*** ICP和迭代卡尔曼滤波更新 ***/
+            ROS_INFO("Downsampled points: %d", feats_down_size);
             if (feats_down_size < 5)
             {
                 ROS_WARN("ICP No point, skip this scan {feats_down_size}!\n");
+                //ROS_WARN("Original undistorted points: %zu", feats_undistort->points.size());
                 continue;
             }
+            t1 = omp_get_wtime();
+
+
 
             normvec->resize(feats_down_size);
             feats_down_world->resize(feats_down_size);
@@ -1436,7 +1650,7 @@ int main(int argc, char** argv)
                 ikdtree.flatten(ikdtree.Root_Node, ikdtree.PCL_Storage, NOT_RECORD);
                 featsFromMap->clear();
                 featsFromMap->points = ikdtree.PCL_Storage;
-                cout<<"[map_update]: map size: "<<featsFromMap->points.size()<<endl;
+                //cout<<"[map_update]: map size: "<<featsFromMap->points.size()<<endl;
             }
 
             pointSearchInd_surf.resize(feats_down_size);
@@ -1460,6 +1674,10 @@ int main(int argc, char** argv)
 
             double t_update_end = omp_get_wtime();
             //cout<< "t_update_end - t_update_start: "<< t_update_end - t_update_start <<endl;
+            // cout << "match_time = " << static_cast<long long>(match_time * 1e6) << endl;
+            // cout<< "ikd_tree.size()  =  "<< static_cast<long long>(ikdtree.size())<<endl;
+
+
             /******* 发布里程计信息 *******/
             publish_odometry(pubOdomAftMapped);
 
@@ -1470,11 +1688,13 @@ int main(int argc, char** argv)
             
             /******* 发布点云数据 *******/
             if (path_en)                         publish_path(pubPath);
-            if ((scan_pub_en || pcd_save_en) && publish_count >= PUBFRAME_PERIOD)      publish_frame_world(pubLaserCloudFull);
+            if ((scan_pub_en || pcd_save_en) )      publish_frame_world(pubLaserCloudFull);
             if (scan_pub_en && scan_body_pub_en) publish_frame_body(pubLaserCloudFull_body);
             // publish_effect_world(pubLaserCloudEffect);
             // publish_map(pubLaserCloudMap);
-            //if(save_map)                         exportStaticMapExample(); 
+            if(save_map)                         exportStaticMapExample(); //存txt静态地图 ，换了存pcd
+
+
 
             /*** 调试变量记录 ***/
             if (runtime_pos_log)
@@ -1543,8 +1763,8 @@ int main(int argc, char** argv)
     }
 
     /**************** 保存地图 ****************/
-    /* 1. 确保有足够的内存
-    /* 2. pcd保存会严重影响实时性能 **/
+    /* 1. 确保有足够的内存  这个是按照帧率数量保存
+    /* 2. pcd保存会严重影响实时性能 **/ 
     if (pcl_wait_save->size() > 0 && pcd_save_en)
     {
         string file_name = string("scans.pcd");
@@ -1554,26 +1774,47 @@ int main(int argc, char** argv)
         pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
     }
 
+    
+    //保存地图    这个是按照开关标志  save_map
+    save_map = false;
+    save_map_file.close();
+    cout<<"accumulated_cloud size: "<<accumulated_cloud->size()<<endl;
+    // 当累积点云数量,保存点云到PCD文件
+    if (accumulated_cloud->size() > 0 && save_map == false) {
+        auto now = std::chrono::system_clock::now();
+        auto time_t = std::chrono::system_clock::to_time_t(now);
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+
+        // 格式化时间戳字符串
+        std::stringstream timestamp_ss;
+        timestamp_ss << std::put_time(std::localtime(&time_t), "%Y%m%d_%H%M%S") << "_" << std::setfill('0') << std::setw(3) << ms.count();
+
+        string all_points_dir(string(ROOT_DIR) + "/PCD/map_" + timestamp_ss.str() + ".pcd");
+        pcl::PCDWriter pcd_writer;
+        cout << "Saving accumulated point cloud to " << all_points_dir << endl;
+        pcd_writer.writeBinary(all_points_dir, *accumulated_cloud);
+        accumulated_cloud->clear();
+    }
                  
-            // 保存时间日志
-            if (runtime_pos_log)
-            {
-                vector<double> t, s_vec, s_vec2, s_vec3, s_vec4, s_vec5, s_vec6, s_vec7;    
-                FILE *fp2;
-                string log_dir = root_dir + "/Log/fast_lio_time_log.csv";
-                fp2 = fopen(log_dir.c_str(),"w+");
-                fprintf(fp2,"time_stamp, total time, scan point size, incremental time, search time, delete size, delete time, tree size st, tree size end, add point size, preprocess time\n");
-                for (int i = 0;i<time_log_counter; i++){
-                    //s_plot11   雷达入参预处理耗时
-                    fprintf(fp2,"%0.8f,%0.8f,%d,%0.8f,%0.8f,%d,%0.8f,%d,%d,%d,%0.8f\n",T1[i],s_plot[i],int(s_plot2[i]),s_plot3[i],s_plot4[i],int(s_plot5[i]),s_plot6[i],int(s_plot7[i]),int(s_plot8[i]), int(s_plot10[i]), s_plot11[i]);
-                    t.push_back(T1[i]);
-                    s_vec.push_back(s_plot9[i]);
-                    s_vec2.push_back(s_plot3[i] + s_plot6[i]);
-                    s_vec3.push_back(s_plot4[i]);
-                    s_vec5.push_back(s_plot[i]);
-                }
-                fclose(fp2);
+        // 保存时间日志
+    if (runtime_pos_log)
+        {
+            vector<double> t, s_vec, s_vec2, s_vec3, s_vec4, s_vec5, s_vec6, s_vec7;    
+            FILE *fp2;
+            string log_dir = root_dir + "/Log/fast_lio_time_log.csv";
+            fp2 = fopen(log_dir.c_str(),"w+");
+            fprintf(fp2,"time_stamp, total time, scan point size, incremental time, search time, delete size, delete time, tree size st, tree size end, add point size, preprocess time\n");
+            for (int i = 0;i<time_log_counter; i++){
+                //s_plot11   雷达入参预处理耗时
+                fprintf(fp2,"%0.8f,%0.8f,%d,%0.8f,%0.8f,%d,%0.8f,%d,%d,%d,%0.8f\n",T1[i],s_plot[i],int(s_plot2[i]),s_plot3[i],s_plot4[i],int(s_plot5[i]),s_plot6[i],int(s_plot7[i]),int(s_plot8[i]), int(s_plot10[i]), s_plot11[i]);
+                t.push_back(T1[i]);
+                s_vec.push_back(s_plot9[i]);
+                s_vec2.push_back(s_plot3[i] + s_plot6[i]);
+                s_vec3.push_back(s_plot4[i]);
+                s_vec5.push_back(s_plot[i]);
             }
+            fclose(fp2);
+        }
         
 
 
