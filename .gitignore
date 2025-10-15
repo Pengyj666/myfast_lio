@@ -1,4 +1,32 @@
+# 编译产物目录
 build/
 devel/
+install/
+
+# 对象文件
 *.o
+*.obj
+
+# 库文件
 *.so*
+*.dll
+*.dylib
+*.a
+
+# 可执行文件
+*.exe
+*.out
+
+# 临时文件
+*~
+*.tmp
+*.temp
+
+# 日志文件
+*.log
+
+# PCD文件
+*.pcd
+
+# ROS相关
+*.bag
