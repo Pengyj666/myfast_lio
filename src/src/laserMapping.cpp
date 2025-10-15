@@ -110,6 +110,7 @@ int main(int argc, char** argv)
             {
                 ROS_WARN("ICP No point, skip this scan {feats_down_size}!\n");
                 //ROS_WARN("Original undistorted points: %zu", feats_undistort->points.size());
+                //ROS_WARN("Original undistorted points: %zu", feats_undistort->points.size());
                 continue;
             }
             

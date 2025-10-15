@@ -330,6 +330,7 @@ Visualization Manager:
           Topic: /localization
           Unreliable: false
           Value: true
+<<<<<<< HEAD
 
 
         - Angle Tolerance: 0.10000000149011612
@@ -369,6 +370,8 @@ Visualization Manager:
 
 
 
+=======
+>>>>>>> daca78003f000d477c1262636199df9770f3fadb
       Enabled: true
       Name: Localization
     - Class: rviz/Axes
