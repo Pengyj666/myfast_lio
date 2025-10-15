@@ -12,7 +12,7 @@ Preprocess::Preprocess()
   :feature_enabled(0), lidar_type(AVIA), blind(0.01), point_filter_num(1)
 {
   inf_bound = 10;           // 无穷远点的距离边界阈值
-  N_SCANS   = 6;            // 激光雷达扫描线数
+  N_SCANS   = 16;            // 激光雷达扫描线数
   SCAN_RATE = 10;           // 扫描频率(Hz)
   group_size = 8;           // 点云分组大小，用于点云聚类分析
   disA = 0.01;              // 点间距离阈值A
@@ -146,6 +146,13 @@ void Preprocess::WLR722F_handler(const sensor_msgs::PointCloud2::ConstPtr &msg)
     if (plsize == 0) return;
 
     if (pl_orig.points[plsize - 1].timestamp <= 0) return;
+    given_offset_time = true;
+    /*** 这些变量仅在没有给出点时间戳时才起作用***/
+    double omega_l = 0.361 * SCAN_RATE;       // 扫描角速度
+    std::vector<bool> is_first(N_SCANS,true);
+    std::vector<double> yaw_fp(N_SCANS, 0.0);      // yaw of first scan point
+    std::vector<float> yaw_last(N_SCANS, 0.0);   // yaw of last scan point
+    std::vector<float> time_last(N_SCANS, 0.0);  // last offset time
 
     if(feature_enabled)
     {
@@ -220,164 +227,32 @@ void Preprocess::WLR722F_handler(const sensor_msgs::PointCloud2::ConstPtr &msg)
     }
     else
     {
-        pl_surf.reserve(plsize);
         for (int i = 0; i < plsize; i++)
         {
-          // 距离盲区过滤
-          double range = pl_orig.points[i].x * pl_orig.points[i].x +
-                        pl_orig.points[i].y * pl_orig.points[i].y +
-                        pl_orig.points[i].z * pl_orig.points[i].z;
-          if (range < blind * blind) continue;
-
-          // 点过滤
-          if (i % point_filter_num != 0) continue;
-
           PointType added_pt;
+          // cout<<"!!!!!!"<<i<<" "<<plsize<<endl;
+          
+          added_pt.normal_x = 0;
+          added_pt.normal_y = 0;
+          added_pt.normal_z = 0;
           added_pt.x = pl_orig.points[i].x;
           added_pt.y = pl_orig.points[i].y;
           added_pt.z = pl_orig.points[i].z;
           added_pt.intensity = pl_orig.points[i].intensity;
-          added_pt.normal_x = 0;
-          added_pt.normal_y = 0;
-          added_pt.normal_z = 0;
+          added_pt.curvature = pl_orig.points[i].timestamp * time_unit_scale;  // curvature unit: ms // cout<<added_pt.curvature<<endl;
 
-          pl_surf.points.push_back(added_pt);
+          if (i % point_filter_num == 0)
+          {
+            if(added_pt.x*added_pt.x+added_pt.y*added_pt.y+added_pt.z*added_pt.z > (blind * blind))
+            {
+              if(std::atan2(added_pt.y, added_pt.x)*180/M_PI > 120.0 || std::atan2(added_pt.y, added_pt.x)*180/M_PI < 60.0){
+                  pl_surf.points.push_back(added_pt);
+              }
+
+            }
+          }
         }
     }
-#endif
-
- #if 0
-    pl_surf.clear();
-    pl_corn.clear();
-    pl_full.clear();
-
-    pcl::PointCloud<WLR722F_ros::Point> pl_orig;
-    pcl::fromROSMsg(*msg, pl_orig);
-    int plsize = pl_orig.points.size();
-    if (plsize == 0) return;
-    pl_surf.reserve(plsize);
-
-    if (pl_orig.points[plsize - 1].timestamp <= 0) return;
-
-   if(feature_enabled)
-{
-    // 清空并预留空间到 pl_buff 中，为每个扫描线准备点云缓存
-    for (int i = 0; i < N_SCANS; i++)
-    {
-        pl_buff[i].clear();
-        pl_buff[i].reserve(plsize);
-    }
-
-    // 遍历所有原始点云数据，按扫描线分发到 pl_buff，并设置点的时间戳（curvature）
-    for (int i = 0; i < plsize; i++)
-    {
-      PointType added_pt;
-      added_pt.normal_x = 0;
-      added_pt.normal_y = 0;
-      added_pt.normal_z = 0;
-      
-      int layer  = pl_orig.points[i].ring -1; // ring start from 1
-      if (layer >= N_SCANS || layer) continue;
-      //if(pl_orig.points[i].x*pl_orig.points[i].x+pl_orig.points[i].y*pl_orig.points[i].y+pl_orig.points[i].z*pl_orig.points[i].z < (blind * blind)) continue;
-
-      if (i % point_filter_num != 0) continue;
-      added_pt.x = pl_orig.points[i].x;
-      added_pt.y = pl_orig.points[i].y;
-      added_pt.z = pl_orig.points[i].z;
-      added_pt.intensity = pl_orig.points[i].intensity;
-      added_pt.curvature = pl_orig.points[i].timestamp * time_unit_scale; 
-      pl_buff[layer].points.push_back(added_pt);
-    }
-
-      // 对每条扫描线上的点云进行处理，计算相邻点距离等信息，并调用特征提取函数
-      for (int j = 0; j < N_SCANS; j++)
-      {
-          PointCloudXYZI &pl = pl_buff[j];
-          int linesize = pl.size();
-          
-          if (linesize < 2) continue;
-          vector<orgtype> &types = typess[j];
-          types.clear();
-          types.resize(linesize);
-          linesize--;
-
-          // 计算每个点的距离和与下一个点的距离平方
-          for (uint i = 0; i < linesize; i++)
-          {
-              types[i].range = sqrt(pl[i].x * pl[i].x + pl[i].y * pl[i].y + pl[i].z * pl[i].z);
-              vx = pl[i].x - pl[i + 1].x;
-              vy = pl[i].y - pl[i + 1].y;
-              vz = pl[i].z - pl[i + 1].z;
-              types[i].dista = vx * vx + vy * vy + vz * vz;
-          }
-
-          // 最后一个点只计算距离
-          types[linesize].range = sqrt(pl[linesize].x * pl[linesize].x + pl[linesize].y * pl[linesize].y + pl[linesize].z * pl[linesize].z);
-
-          // 调用特征提取函数
-          give_feature(pl, types);
-      }
-    }
-    // else
-    // {
-    //   for (int i = 0; i < plsize; i++)
-    //   {
-    //     PointType added_pt;
-    //     // cout<<"!!!!!!"<<i<<" "<<plsize<<endl;
-        
-    //     added_pt.normal_x = 0;
-    //     added_pt.normal_y = 0;
-    //     added_pt.normal_z = 0;
-    //     added_pt.x = pl_orig.points[i].x;
-    //     added_pt.y = pl_orig.points[i].y;
-    //     added_pt.z = pl_orig.points[i].z;
-    //     added_pt.intensity = pl_orig.points[i].intensity;
-    //     added_pt.curvature = pl_orig.points[i].timestamp * time_unit_scale;  // curvature unit: ms // cout<<added_pt.curvature<<endl;
-        
-         
-
-    //     if (i % point_filter_num == 0)
-    //     {
-    //       if(added_pt.x*added_pt.x+added_pt.y*added_pt.y+added_pt.z*added_pt.z > (blind * blind))
-    //       {
-    //         pl_surf.points.push_back(added_pt);
-    //       }
-    //     }
-    //   }
-    // }
- #endif
-
-  //效率低
-  #if 0
-  pl_surf.clear();
-  pl_full.clear();
-
-  pcl::PointCloud<pcl::PointXYZI> pl_orig;
-  pcl::fromROSMsg(*msg, pl_orig);
-  int plsize = pl_orig.size();
-  pl_surf.reserve(plsize);
-  for (int i = 0; i < plsize; i++)
-  {
-    // 距离盲区过滤
-    double range = pl_orig.points[i].x * pl_orig.points[i].x +
-                   pl_orig.points[i].y * pl_orig.points[i].y +
-                   pl_orig.points[i].z * pl_orig.points[i].z;
-    if (range < blind * blind) continue;
-
-    // 点过滤
-    if (i % point_filter_num != 0) continue;
-
-    PointType added_pt;
-    added_pt.x = pl_orig.points[i].x;
-    added_pt.y = pl_orig.points[i].y;
-    added_pt.z = pl_orig.points[i].z;
-    added_pt.intensity = pl_orig.points[i].intensity;
-    added_pt.normal_x = 0;
-    added_pt.normal_y = 0;
-    added_pt.normal_z = 0;
-
-    pl_surf.points.push_back(added_pt);
-  }
   #endif
 }
 
