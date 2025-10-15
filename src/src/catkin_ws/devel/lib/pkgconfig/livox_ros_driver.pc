@@ -1,8 +1,0 @@
-prefix=//home/edy/code/githubSlam/FAST_LIO/src/src/catkin_ws/devel
-
-Name: livox_ros_driver
-Description: Description of livox_ros_driver
-Version: 2.0.0
-Cflags: -I//home/edy/code/githubSlam/FAST_LIO/src/src/catkin_ws/devel/include
-Libs: -L${prefix}/lib 
-Requires: roscpp rospy std_msgs message_runtime pcl_ros

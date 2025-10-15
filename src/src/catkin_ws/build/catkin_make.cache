@@ -1,2 +1,0 @@
-livox_ros_driver/livox_ros_driver
--DCATKIN_DEVEL_PREFIX=//home/edy/code/githubSlam/FAST_LIO/src/src/catkin_ws/devel -DCMAKE_INSTALL_PREFIX=//home/edy/code/githubSlam/FAST_LIO/src/src/catkin_ws/install -G Unix Makefiles
