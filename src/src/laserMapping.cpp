@@ -110,7 +110,6 @@ int main(int argc, char** argv)
             {
                 ROS_WARN("ICP No point, skip this scan {feats_down_size}!\n");
                 //ROS_WARN("Original undistorted points: %zu", feats_undistort->points.size());
-                //ROS_WARN("Original undistorted points: %zu", feats_undistort->points.size());
                 continue;
             }
             
@@ -137,14 +136,14 @@ int main(int argc, char** argv)
 
             /*** 将特征点添加到地图kdtree ***/
             t3 = omp_get_wtime();
-            map_incremental();
+            map_incremental();      //将特征点添加到地图kdtree 的时候   同步ikdtree到地图
             t5 = omp_get_wtime();
             
             /******* 发布点云数据 *******/
             publish_this();
 
             //保存地图    这个是按照开关标志  save_map
-            if(save_map)            exportStaticMapExample();
+            // if(save_map)            exportStaticMapExample();  //不用kdtree保存地图
             save_map_accumulated_cloud(); 
 
             /*** 调试变量记录 ***/
@@ -156,7 +155,7 @@ int main(int argc, char** argv)
             // cout << "t4 at: " << static_cast<long long>(t4 * 1e6) << " microseconds" << endl;
             // cout << "t5 at: " << static_cast<long long>((t5 -t3) * 1e6) << " microseconds" << endl;
             double t6 = omp_get_wtime() - t0;
-            cout << "t6 at: " << static_cast<long long>(t6 * 1e6) << " microseconds" << endl;
+            cout << "t6 at: " << static_cast<long long>(t6 * 1e6) << " us" << endl;
             // cout << "s_plot11 at: " << static_cast<long long>(s_plot11[0]* 1e6) << " microseconds" << endl;
         }
 

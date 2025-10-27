@@ -597,15 +597,15 @@ void map_incremental( )
     //add_point_size = PointToAdd.size() + PointNoNeedDownsample.size();
     kdtree_incremental_time = omp_get_wtime() - st_time;
 
-    // if(save_map){
-    //     std::lock_guard<std::mutex> lock(txt_save_mutex);
-    //     for (const auto& point : PointToAdd) {
-    //         accumulated_cloud->push_back(point);
-    //     }
-    //     for (const auto& point : PointNoNeedDownsample) {
-    //         accumulated_cloud->push_back(point);
-    //     }
-    // }
+    if(save_map){
+        std::lock_guard<std::mutex> lock(txt_save_mutex);
+        for (const auto& point : PointToAdd) {
+            accumulated_cloud->push_back(point);
+        }
+        for (const auto& point : PointNoNeedDownsample) {
+            accumulated_cloud->push_back(point);
+        }
+    }
 }
 
 bool  imu_pretreatment(){

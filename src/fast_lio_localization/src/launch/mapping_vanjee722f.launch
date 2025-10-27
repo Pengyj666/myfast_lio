@@ -3,7 +3,7 @@
 
     <arg name="rviz" default="true" />
 
-    <rosparam command="load" file="$(find fast_lio_localization)/config/vanjee722f.yaml" />
+    <!-- <rosparam command="load" file="$(find fast_lio_localization)/config/vanjee722f.yaml" /> -->
 
     <param name="map_voxel_size" type="double" value="0.4"/>
     <param name="scan_voxel_size" type="double" value="0.1" />

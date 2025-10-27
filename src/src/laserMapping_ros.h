@@ -27,6 +27,8 @@
 #include "laserMapping_mapping.h"
 
 extern int lidar_type;
+extern std::ofstream odom_file;
+extern bool odom_file_initialized;
 
 void publish_path();
 void publish_odometry();

@@ -3,6 +3,8 @@
 
 #include "laserMapping_help.h"
 #include <std_srvs/SetBool.h> 
+#include <fstream>
+#include <iomanip>
 
 bool loadExistingMap();
 void exportStaticMapExample( );

@@ -83,9 +83,23 @@ bool save_map_cbk(std_srvs::SetBool::Request &req,std_srvs::SetBool::Response &r
     if(req.data){
         save_map = true;
         res.success = true;
+            // 初始化里程计文件
+        if (!odom_file_initialized) {
+            odom_file.open(string(string(ROOT_DIR) + "PCD/odometry_data.txt").c_str());
+            if (odom_file.is_open()) {
+                // 写入表头
+                odom_file << "timestamp,x,y,z,qx,qy,qz,qw,vx,vy,vz,wx,wy,wz" << std::endl;
+                odom_file_initialized = true;
+            }
+        }
     }else{
         save_map = false;
-        res.success = false;
+        res.success = true;
+        if (odom_file_initialized) {
+            odom_file_initialized = false;
+            odom_file.close();
+        }
+  
         res.message = "Cancel save map";
     }
     cout<<"save map"<< save_map<<endl;

@@ -11,6 +11,9 @@
 #include <thread>
 #include <chrono>
 #include <mutex>
+#include <visualization_msgs/Marker.h>
+#include <visualization_msgs/MarkerArray.h>
+#include <nav_msgs/Path.h>
 
 class TransformFusion {
 private:
@@ -18,19 +21,21 @@ private:
     ros::Subscriber sub_odometry_;
     ros::Subscriber sub_map_to_odom_;
     ros::Publisher pub_localization_;
-    
+    ros::Publisher pubPath;
     // 存储从里程计坐标系到基座坐标系的变换关系
     nav_msgs::Odometry cur_odom_to_baselink_;
     // 存储从地图坐标系到里程计坐标系的变换关系
     nav_msgs::Odometry cur_map_to_odom_;
-    
+
     bool odom_received_;
     bool map_to_odom_received_;
+    bool isOrNotPubPath = true;
     
     std::mutex odom_mutex_;
     std::mutex map_to_odom_mutex_;
     
     double FREQ_PUB_LOCALIZATION_;
+    nav_msgs::Path path;
     
 public:
     TransformFusion() : 
@@ -39,7 +44,7 @@ public:
         
         // Parameters
         nh_.param("freq_pub_localization", FREQ_PUB_LOCALIZATION_, 50.0);
-        
+        pubPath = nh_.advertise<nav_msgs::Path>("/relocation_lio_path", 1);
         // Subscribers
         sub_odometry_ = nh_.subscribe("/Odometry", 1, &TransformFusion::cbSaveCurOdom, this);
         sub_map_to_odom_ = nh_.subscribe("/map_to_odom", 1, &TransformFusion::cbSaveMapToOdom, this);
@@ -75,7 +80,7 @@ public:
         cur_map_to_odom_ = *odom_msg;
         map_to_odom_received_ = true;
     }
-    
+
     void transformFusion() {
         static tf::TransformBroadcaster br;
         ros::Rate rate(FREQ_PUB_LOCALIZATION_);
@@ -150,6 +155,27 @@ public:
                 localization.twist = cur_odom.twist;
                 
                 pub_localization_.publish(localization);
+                if(isOrNotPubPath)  {
+                    geometry_msgs::PoseStamped msg_body_pose;
+                    // nav_msgs::Path msg_body_pose;
+                    // msg_body_pose.pose.position.x = xyz.x();
+                    // msg_body_pose.pose.position.y = xyz.y();
+                    // msg_body_pose.pose.position.z = xyz.z();
+                    // msg_body_pose.pose.orientation.x = quat_result.x();
+                    // msg_body_pose.pose.orientation.y = quat_result.y();
+                    // msg_body_pose.pose.orientation.z = quat_result.z();
+                    // msg_body_pose.pose.orientation.w = quat_result.w();
+
+                    path.header.stamp = cur_odom.header.stamp;
+                    path.header.frame_id = "map";
+                    msg_body_pose.pose = localization.pose.pose;
+                    msg_body_pose.header.stamp = cur_odom.header.stamp;
+                    msg_body_pose.header.frame_id = "map";
+
+                    path.poses.push_back(msg_body_pose);
+                    pubPath.publish(path);
+                }
+
             }
             
             rate.sleep();

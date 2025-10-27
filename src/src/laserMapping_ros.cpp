@@ -28,6 +28,8 @@ pcl::VoxelGrid<PointType> downSizeFilterMap;
 
 mutex mtx_buffer;
 
+std::ofstream odom_file;
+bool odom_file_initialized = false;
 
 bool   scan_pub_en = true, dense_pub_en = false, scan_body_pub_en = true;
 int lidar_type;
@@ -269,6 +271,25 @@ void publish_odometry()
 
     // 填充位姿信息
     set_posestamp(odomAftMapped.pose);
+     // 添加保存到txt文件的代码
+    if (odom_file.is_open() && odom_file_initialized) {
+        odom_file << std::fixed << std::setprecision(9) 
+                  << lidar_end_time << ","
+                  << odomAftMapped.pose.pose.position.x << ","
+                  << odomAftMapped.pose.pose.position.y << ","
+                  << odomAftMapped.pose.pose.position.z << ","
+                  << odomAftMapped.pose.pose.orientation.x << ","
+                  << odomAftMapped.pose.pose.orientation.y << ","
+                  << odomAftMapped.pose.pose.orientation.z << ","
+                  << odomAftMapped.pose.pose.orientation.w << ","
+                  << odomAftMapped.twist.twist.linear.x << ","
+                  << odomAftMapped.twist.twist.linear.y << ","
+                  << odomAftMapped.twist.twist.linear.z << ","
+                  << odomAftMapped.twist.twist.angular.x << ","
+                  << odomAftMapped.twist.twist.angular.y << ","
+                  << odomAftMapped.twist.twist.angular.z
+                  << std::endl;
+    }
 
     // 发布里程计消息
     pubOdomAftMapped.publish(odomAftMapped);
@@ -389,7 +410,6 @@ void init_param(ros::NodeHandle &nh)
     p_pre->lidar_type = lidar_type;
     path.header.stamp    = ros::Time::now();
     path.header.frame_id ="camera_init";
-
 
 }
 double timediff_lidar_wrt_imu = 0.0;
