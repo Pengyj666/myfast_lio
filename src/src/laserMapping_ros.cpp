@@ -1,25 +1,33 @@
 #include "laserMapping_ros.h"
 
+#include <std_msgs/Float64.h>
+
+#include "common/offset_timer.h"
+
 ros::Subscriber sub_pcl;
 ros::Subscriber sub_imu ;
+ros::Publisher pubOffsetTs;
 ros::Publisher pubLaserCloudFull;
 ros::Publisher pubLaserCloudFull_body ;
 ros::Publisher pubLaserCloudEffect;
 ros::Publisher pubLaserCloudMap;
 ros::Publisher pubOdomAftMapped;
+ros::Publisher pubOdomAftMappedBase ;
 ros::Publisher pubPath ;
-ros::ServiceServer create_lader_map;
+ros::ServiceServer serv_ctrl_mapping;
+ros::ServiceServer serv_save_mapping;
 
 // 轨迹路径消息，用于发布机器人的运动轨迹
 nav_msgs::Path path;
 // 里程计消息，存储滤波后的位置和姿态信息
 nav_msgs::Odometry odomAftMapped;
+
+nav_msgs::Odometry odomAftMappedBase;
 // 四元数消息，用于表示机器人姿态
 geometry_msgs::Quaternion geoQuat;
 // 位姿消息，包含机器人在body坐标系下的位姿信息
 geometry_msgs::PoseStamped msg_body_pose;
 
-bool reduce_framerate = false;   // 是否降低帧率的标志变量
 deque<double>                     temp_time_buffer;
 deque<PointCloudXYZI::Ptr>        temp_lidar_buffer;
 
@@ -29,11 +37,16 @@ pcl::VoxelGrid<PointType> downSizeFilterMap;
 mutex mtx_buffer;
 
 std::ofstream odom_file;
-bool odom_file_initialized = false;
+std::atomic<bool>  odom_file_initialized = {false};
 
 bool   scan_pub_en = true, dense_pub_en = false, scan_body_pub_en = true;
 int lidar_type;
+double lidar_d;
 
+OffsetTimer* OffsetTimerIns() {
+  static OffsetTimer offset_timer("lidar");
+  return &offset_timer;
+}
 
 template<typename T>
 void set_posestamp(T & out)
@@ -45,6 +58,42 @@ void set_posestamp(T & out)
     out.pose.orientation.y = geoQuat.y;
     out.pose.orientation.z = geoQuat.z;
     out.pose.orientation.w = geoQuat.w;
+}
+
+template<typename T>
+void set_basepose(T & out)
+{ 
+    double lidar_Radian = lidar_d*M_PI/180;
+    M3D calibrateTilt_X;
+    M3D calibrateTilt_Z;
+    calibrateTilt_X << 1, 0, 0,
+                    0, cos(lidar_Radian), sin(lidar_Radian),
+                    0, -sin(lidar_Radian),cos(lidar_Radian);
+
+    calibrateTilt_Z << 0, -1, 0,
+                1, 0, 0,
+                0, 0, 1;
+    M3D total_rot_ = calibrateTilt_Z * calibrateTilt_X;
+
+    // Eigen::Quaterniond current_quat(geoQuat.w, geoQuat.x, geoQuat.y, geoQuat.z);
+
+    // M3D current_rot = current_quat.toRotationMatrix();
+    // M3D total_rot = total_rot_ * current_rot;
+
+    // Eigen::Quaterniond quat(total_rot);
+    V3D pos(state_point.pos(0), state_point.pos(1), state_point.pos(2));
+    V3D rotated_pos = total_rot_ * pos; 
+    out.pose.position.x = rotated_pos(0);
+    out.pose.position.y = rotated_pos(1);
+    out.pose.position.z = rotated_pos(2);
+    out.pose.orientation.x = geoQuat.x;
+    out.pose.orientation.y = geoQuat.y;
+    out.pose.orientation.z = geoQuat.z;
+    out.pose.orientation.w = geoQuat.w;
+    double roll, pitch, yaw;
+    Eigen::Quaterniond q(geoQuat.w, geoQuat.x, geoQuat.y, geoQuat.z);
+    tf::Matrix3x3(tf::Quaternion(q.x(), q.y(), q.z(), q.w())).getRPY(roll, pitch, yaw);
+    // cout << "/as_lio/lio ===>" <<"roll: " << roll << " pitch: " << pitch << " yaw: " << yaw << endl;
 }
 
 void set_geoQuat()
@@ -62,7 +111,7 @@ void downSizeFilter(){
 
 #pragma region 发布点云
 
-PointCloudXYZI::Ptr pcl_wait_pub(new PointCloudXYZI(500000, 1));
+// PointCloudXYZI::Ptr pcl_wait_pub(new PointCloudXYZI(500000, 1));
 PointCloudXYZI::Ptr pcl_wait_save(new PointCloudXYZI());
 
 bool init_flag = false;
@@ -268,11 +317,14 @@ void publish_odometry()
     odomAftMapped.header.frame_id = "camera_init";
     odomAftMapped.child_frame_id = "body";
     odomAftMapped.header.stamp = ros::Time().fromSec(lidar_end_time);
+    odomAftMappedBase.header = odomAftMapped.header;
+    odomAftMappedBase.child_frame_id = "body_base";
+    odomAftMappedBase.header.stamp = ros::Time().fromSec(lidar_end_time);
 
     // 填充位姿信息
     set_posestamp(odomAftMapped.pose);
      // 添加保存到txt文件的代码
-    if (odom_file.is_open() && odom_file_initialized) {
+    if (odom_file.is_open() && odom_file_initialized.load()) {
         odom_file << std::fixed << std::setprecision(9) 
                   << lidar_end_time << ","
                   << odomAftMapped.pose.pose.position.x << ","
@@ -293,6 +345,9 @@ void publish_odometry()
 
     // 发布里程计消息
     pubOdomAftMapped.publish(odomAftMapped);
+    set_basepose(odomAftMappedBase.pose);
+
+    pubOdomAftMappedBase.publish(odomAftMappedBase);
     auto P = kf.get_P();
     // 从卡尔曼滤波器获取协方差矩阵，并重新排列以适配ROS标准格式
     for (int i = 0; i < 6; i ++)
@@ -339,27 +394,31 @@ void publish_this(){
 
 #pragma endregion
 void init_subAndpub(ros::NodeHandle &nh){
-    sub_pcl = p_pre->lidar_type == AVIA ? \
-        nh.subscribe(lid_topic, 200000, livox_pcl_cbk) : \
-        nh.subscribe(lid_topic, 200000, standard_pcl_cbk);
-    sub_imu = nh.subscribe(imu_topic, 200000, imu_cbk);
+    sub_pcl = nh.subscribe(lid_topic, 5, standard_pcl_cbk);
+    sub_imu = nh.subscribe(imu_topic, 5, imu_cbk);
+    pubOffsetTs = nh.advertise<std_msgs::Float64>("/as_lio/offset_ts", 1);
     pubLaserCloudFull = nh.advertise<sensor_msgs::PointCloud2>
-        ("/cloud_registered", 100000);
+        ("/as_lio/cloud_registered", 3);
     pubLaserCloudFull_body = nh.advertise<sensor_msgs::PointCloud2>
-        ("/cloud_registered_body", 100000);
+        ("/as_lio/cloud_registered_body", 3);
     pubLaserCloudEffect = nh.advertise<sensor_msgs::PointCloud2>
-        ("/cloud_effected", 100000);
+        ("/as_lio/cloud_effected", 3);
     pubLaserCloudMap = nh.advertise<sensor_msgs::PointCloud2>
-        ("/Laser_map", 100000);
+        ("/as_lio/Laser_map", 3);
     pubOdomAftMapped = nh.advertise<nav_msgs::Odometry> 
-        ("/Odometry", 100000);
+        ("/as_lio/org_lio", 3);
+    pubOdomAftMappedBase = nh.advertise<nav_msgs::Odometry> 
+        ("/as_lio/lio", 3);
     pubPath          = nh.advertise<nav_msgs::Path> 
-        ("/path", 100000);
-    create_lader_map = nh.advertiseService("create_map", save_map_cbk);
+        ("/as_lio/path", 3);
+    serv_ctrl_mapping = nh.advertiseService("/as_lio/ctrl", ctrl_mapping_cbk);
+    serv_save_mapping = nh.advertiseService("/as_lio/savemap", save_map_cbk);
+
+    OffsetTimerIns()->Hello();
 }
 void init_param(ros::NodeHandle &nh)
 { 
-        // 从参数服务器加载配置参数
+    // 从参数服务器加载配置参数
     nh.param<bool>("publish/path_en",path_en, true);
     nh.param<bool>("publish/scan_publish_en",scan_pub_en, true);
     nh.param<bool>("publish/dense_publish_en",dense_pub_en, true);
@@ -395,10 +454,13 @@ void init_param(ros::NodeHandle &nh)
     nh.param<bool>("mapping/extrinsic_est_en", extrinsic_est_en, true);
     nh.param<bool>("pcd_save/pcd_save_en", pcd_save_en, true);
     nh.param<int>("pcd_save/interval", pcd_save_interval, -1);
-    nh.param<bool>("pcd_save/save_map", save_map, false);
+    bool save_map_this = false;
+    nh.param<bool>("pcd_save/save_map", save_map_this, false);
     nh.param<vector<double>>("mapping/extrinsic_T", extrinT, vector<double>());
     nh.param<vector<double>>("mapping/extrinsic_R", extrinR, vector<double>());
+    nh.param<double>("lidar_d", lidar_d, 0.0);
 
+    save_map.store(save_map_this);
     // 初始化点选择和残差数组
     memset(point_selected_surf, true, sizeof(point_selected_surf));
     memset(res_last, -1000.0f, sizeof(res_last));
@@ -434,103 +496,74 @@ double timediff_lidar_wrt_imu = 0.0;
  */
 void imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in) 
 {
-    publish_count ++;
-    // cout<<"IMU got at: "<<msg_in->header.stamp.toSec()<<endl;
-    sensor_msgs::Imu::Ptr msg(new sensor_msgs::Imu(*msg_in));
+    double msg_ts = msg_in->header.stamp.toSec();
+    double sys_ts = ros::Time::now().toSec();
+    OffsetTimerIns()->FeedEmb_ts(sys_ts, msg_ts);
 
-    // 调整IMU消息的时间戳，补偿激光雷达与IMU之间的时间差
-    msg->header.stamp = ros::Time().fromSec(msg_in->header.stamp.toSec() - time_diff_lidar_to_imu);
-    
-    // 如果时间差超过阈值且时间同步使能，则进行额外的时间同步调整
-    if (abs(timediff_lidar_wrt_imu) > 0.1 && time_sync_en)
     {
-        msg->header.stamp = \
-        ros::Time().fromSec(timediff_lidar_wrt_imu + msg_in->header.stamp.toSec());
+        static double pre_ts = 0;
+        if (pre_ts + 1.0 < sys_ts) {
+            pre_ts = sys_ts;
+
+            double dts = OffsetTimerIns()->GetEmb_dt();
+            if (dts > 0.0) {
+                std_msgs::Float64 msg;
+                msg.data = OffsetTimerIns()->GetEmb_dt();
+                pubOffsetTs.publish(msg);   
+            }
+        }
     }
-
-    double timestamp = msg->header.stamp.toSec();
-
-    // 加锁保护缓冲区操作
-    mtx_buffer.lock();
-
-    // 检查时间戳是否出现回退，如果回退则清空IMU缓冲区
-    if (timestamp < last_timestamp_imu)
-    {
-        ROS_WARN("imu loop back, clear buffer");
-        imu_buffer.clear();
-    }
-
-    last_timestamp_imu = timestamp;
-
-    // 将处理后的IMU消息添加到缓冲区
-    imu_buffer.push_back(msg);
-    mtx_buffer.unlock();
     
-    // 通知所有等待缓冲区的线程
-    sig_buffer.notify_all();
+    if(is_running_.load() == 1){
+        static double pre_ts = 0.0;
+        double cur_ts = msg_in->header.stamp.toSec();
+        if (cur_ts < pre_ts) {
+            ROS_WARN("Preprocess::WLR722F_handler(): lio_imu time Jump back , dts=%.3f, cur_ts=%.3f, pre_ts=%.3f", cur_ts - pre_ts, cur_ts, pre_ts);
+            return;
+        }
+        if (pre_ts > 0.0 && (cur_ts > pre_ts + 0.2)) {
+            ROS_WARN("Preprocess::WLR722F_handler(): lio_imu time jump is large, dts=%.3f, cur_ts=%.3f, pre_ts=%.3f", cur_ts - pre_ts, cur_ts, pre_ts);
+        }
+        pre_ts = cur_ts;
+        publish_count ++;
+        // cout<<"IMU got at: "<<msg_in->header.stamp.toSec()<<endl;
+        sensor_msgs::Imu::Ptr msg(new sensor_msgs::Imu(*msg_in));
+
+        // 调整IMU消息的时间戳，补偿激光雷达与IMU之间的时间差
+        msg->header.stamp = ros::Time().fromSec(msg_in->header.stamp.toSec() - time_diff_lidar_to_imu);
+        
+        // 如果时间差超过阈值且时间同步使能，则进行额外的时间同步调整
+        if (abs(timediff_lidar_wrt_imu) > 0.1 && time_sync_en)
+        {
+            msg->header.stamp = \
+            ros::Time().fromSec(timediff_lidar_wrt_imu + msg_in->header.stamp.toSec());
+        }
+
+        double timestamp = msg->header.stamp.toSec();
+
+        // 加锁保护缓冲区操作
+        mtx_buffer.lock();
+
+        // 检查时间戳是否出现回退，如果回退则清空IMU缓冲区
+        if (timestamp < last_timestamp_imu)
+        {
+            ROS_WARN("imu loop back, clear buffer");
+            imu_buffer.clear();
+        }
+
+        last_timestamp_imu = timestamp;
+
+        // 将处理后的IMU消息添加到缓冲区
+        imu_buffer.push_back(msg);
+        mtx_buffer.unlock();
+        
+        // 通知所有等待缓冲区的线程
+        sig_buffer.notify_all();
+    }
 }
 
 
 bool   timediff_set_flg = false;
-/**
- * @brief 处理Livox激光雷达点云数据的回调函数
- * @param msg Livox自定义消息的常量指针，包含激光雷达点云数据
- * 
- * 该函数主要功能包括：
- * 1. 时间戳检查和同步处理
- * 2. IMU与LiDAR数据的时间同步检测
- * 3. 点云数据预处理
- * 4. 将处理后的数据存入缓冲区
- * 
- * 函数内部维护了时间戳、缓冲区等状态信息，确保数据处理的时序正确性
- */
-
-void livox_pcl_cbk(const livox_ros_driver::CustomMsg::ConstPtr &msg) 
-{
-    // 加锁保护共享缓冲区
-    mtx_buffer.lock();
-    
-    // 记录预处理开始时间，用于性能统计
-    double preprocess_start_time = omp_get_wtime();
-    scan_count ++;
-    
-    // 检查时间戳是否回退，如果回退则清空激光雷达缓冲区
-    if (msg->header.stamp.toSec() < last_timestamp_lidar)
-    {
-        ROS_ERROR("lidar loop back, clear buffer");
-        lidar_buffer.clear();
-    }
-    last_timestamp_lidar = msg->header.stamp.toSec();
-    
-    // 检查IMU和LiDAR数据是否同步（在未启用时间同步时）
-    if (!time_sync_en && abs(last_timestamp_imu - last_timestamp_lidar) > 10.0 && !imu_buffer.empty() && !lidar_buffer.empty() )
-    {
-        printf("IMU and LiDAR not Synced, IMU time: %lf, lidar header time: %lf \n",last_timestamp_imu, last_timestamp_lidar);
-    }
-
-    // 自动时间同步：计算LiDAR相对于IMU的时间差
-    if (time_sync_en && !timediff_set_flg && abs(last_timestamp_lidar - last_timestamp_imu) > 1 && !imu_buffer.empty())
-    {
-        timediff_set_flg = true;
-        timediff_lidar_wrt_imu = last_timestamp_lidar + 0.1 - last_timestamp_imu;
-        printf("Self sync IMU and LiDAR, time diff is %.10lf \n", timediff_lidar_wrt_imu);
-    }
-
-    // 创建点云对象并进行预处理
-    PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
-    p_pre->process(msg, ptr);
-    
-    // 将处理后的点云数据和时间戳存入缓冲区
-    lidar_buffer.push_back(ptr);
-    time_buffer.push_back(last_timestamp_lidar);
-    
-    // 记录预处理耗时用于性能分析
-    s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
-    
-    // 解锁并通知等待的线程
-    mtx_buffer.unlock();
-    sig_buffer.notify_all();
-}
 
 /**
  * @brief 标准点云回调函数，处理来自激光雷达的点云数据
@@ -541,51 +574,51 @@ void livox_pcl_cbk(const livox_ros_driver::CustomMsg::ConstPtr &msg)
  */
 void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg) 
 {
-   
-    // assert(msg->height == 1);
-    // 加锁保护共享数据缓冲区
-    mtx_buffer.lock();
-    scan_count ++;
-    double preprocess_start_time = omp_get_wtime();
-    
-    // 检查时间戳是否出现回退，如果回退则清空缓冲区
-    if (msg->header.stamp.toSec() < last_timestamp_lidar)
-    {
-        ROS_ERROR("lidar loop back, clear buffer");
-        lidar_buffer.clear();
-    }
-    // cout << "Debug: File=" << __FILE__ << ", Line=" << __LINE__ << ", Function=" << __FUNCTION__ << endl;
-    // 创建新的点云对象并进行预处理
-    PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
-    p_pre->process(msg, ptr);
-    // 将处理后的点云数据和时间戳存入缓冲区
-    if(reduce_framerate){
-        if(num_scan == NUM_SCAN){
-            // 将临时缓冲区的数据追加到主缓冲区
-            lidar_buffer.insert(lidar_buffer.end(), temp_lidar_buffer.begin(), temp_lidar_buffer.end());
-            time_buffer.insert(time_buffer.end(), temp_time_buffer.begin(), temp_time_buffer.end());
-            
-            // 清空临时缓冲区
-            temp_lidar_buffer.clear();
-            temp_time_buffer.clear();
-            num_scan =0;
-        } else {
-            temp_lidar_buffer.push_back(ptr);
-            temp_time_buffer.push_back(msg->header.stamp.toSec());
-            num_scan ++;
+   if(is_running_.load() == 1){
+            static double pre_ts = 0.0;
+        double cur_ts = msg->header.stamp.toSec();
+        if (cur_ts < pre_ts) {
+            ROS_WARN("Preprocess::WLR722F_handler(): lio_imu time Jump back , dts=%.3f, cur_ts=%.3f, pre_ts=%.3f", cur_ts - pre_ts, cur_ts, pre_ts);
+            return;
         }
-    }else{
-        lidar_buffer.push_back(ptr);
-        time_buffer.push_back(msg->header.stamp.toSec());
-    }
-    
-    last_timestamp_lidar = msg->header.stamp.toSec();
-    
-    // 记录预处理耗时
-    s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
-    // cout<<"s_plot11[scan_count]: "<<s_plot11[scan_count]<<endl;
-    // 解锁并通知等待的线程
-    mtx_buffer.unlock();
-    sig_buffer.notify_all();
+        if (pre_ts > 0.0 && (cur_ts > pre_ts + 0.5)) {
+            ROS_WARN("Preprocess::WLR722F_handler(): lio_imu time jump is large, dts=%.3f, cur_ts=%.3f, pre_ts=%.3f", cur_ts - pre_ts, cur_ts, pre_ts);
+        }
+        static std::atomic<bool> odd_number = {true};
+        bool flag = true;
+        if (odd_number.compare_exchange_strong(flag, false))
+        {
+            // assert(msg->height == 1);
+            // 加锁保护共享数据缓冲区
+            mtx_buffer.lock();
+            scan_count ++;
+            double preprocess_start_time = omp_get_wtime();
+            
+            // 检查时间戳是否出现回退，如果回退则清空缓冲区
+            if (msg->header.stamp.toSec() < last_timestamp_lidar)
+            {
+                ROS_ERROR("lidar loop back, clear buffer");
+                lidar_buffer.clear();
+            }
+            // cout << "Debug: File=" << __FILE__ << ", Line=" << __LINE__ << ", Function=" << __FUNCTION__ << endl;
+            // 创建新的点云对象并进行预处理
+            PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
+            p_pre->process(msg, ptr);
+            // 将处理后的点云数据和时间戳存入缓冲区
+            lidar_buffer.push_back(ptr);
+            time_buffer.push_back(msg->header.stamp.toSec());
+            
+            last_timestamp_lidar = msg->header.stamp.toSec();
+            
+            // 记录预处理耗时
+            s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
+            // cout<<"s_plot11[scan_count]: "<<s_plot11[scan_count]<<endl;
+            // 解锁并通知等待的线程
+            mtx_buffer.unlock();
+            sig_buffer.notify_all();
+        }else{
+            odd_number.store(true);
+        }
+   }
 }
 

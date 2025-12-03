@@ -23,8 +23,8 @@ double time_diff_lidar_to_imu = 0.0;
 
 condition_variable sig_buffer;
 
-mutex txt_save_mutex;
 PointCloudXYZI::Ptr accumulated_cloud(new PointCloudXYZI());
+mutex accumulated_cloud_mutex;
 
 string root_dir = ROOT_DIR;
 string map_file_path, lid_topic, imu_topic;
@@ -34,7 +34,7 @@ double last_timestamp_lidar = 0, last_timestamp_imu = -1.0;
 double gyr_cov = 0.1, acc_cov = 0.1, b_gyr_cov = 0.0001, b_acc_cov = 0.0001;
 double filter_size_corner_min = 0, filter_size_surf_min = 0, filter_size_map_min = 0, fov_deg = 0;
 double cube_len = 0, HALF_FOV_COS = 0, FOV_DEG = 0, total_distance = 0, lidar_end_time = 0, first_lidar_time = 0.0;
-int    effct_feat_num = 0, time_log_counter = 0, scan_count = 0, publish_count = 0 , num_scan = 0;
+int    effct_feat_num = 0, time_log_counter = 0, scan_count = 0, publish_count = 0;
 int    iterCount = 0, feats_down_size = 0, NUM_MAX_ITERATIONS = 0, laserCloudValidNum = 0, pcd_save_interval = -1, pcd_index = 0;
 int    txt_save_interval = 2; // 保存txt文件的间隔
 bool   point_selected_surf[100000] = {0};
@@ -47,14 +47,9 @@ vector<double>       extrinT(3, 0.0);
 vector<double>       extrinR(9, 0.0);
 deque<double>                     time_buffer;
 deque<PointCloudXYZI::Ptr>        lidar_buffer;
-
-
-
-
 deque<sensor_msgs::Imu::ConstPtr> imu_buffer;
 
-
-bool   save_map = false; // 是否保存地图的标志变量
+std::atomic<bool> save_map = {false};
 
 /**
  * @brief 从地图中提取的特征点云
@@ -167,12 +162,13 @@ void RGBpointBodyToWorld(PointType const * const pi, PointType * const po )
 void RGBpointBodyLidarToIMU(PointType const * const pi, PointType * const po )
 {
     V3D p_body_lidar(pi->x, pi->y, pi->z);
-    V3D p_body_imu(state_point.offset_R_L_I*p_body_lidar + state_point.offset_T_L_I);
+    V3D p_body_imu(state_point.offset_R_L_I * p_body_lidar + state_point.offset_T_L_I);
 
     po->x = p_body_imu(0);
     po->y = p_body_imu(1);
     po->z = p_body_imu(2);
     po->intensity = pi->intensity;
+
 }
 
 void pointBodyToWorld(PointType const * const pi, PointType * const po )
@@ -254,7 +250,7 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 
         VF(4) pabcd;
         point_selected_surf[i] = false;
-        if (esti_plane(pabcd, points_near, 0.05f))
+        if (esti_plane(pabcd, points_near, 0.07f))
         {
             float pd2 = pabcd(0) * point_world.x + pabcd(1) * point_world.y + pabcd(2) * point_world.z + pabcd(3);
             float s = 1 - 0.9 * fabs(pd2) / sqrt(p_body.norm());
@@ -470,7 +466,7 @@ void lasermap_fov_segment()
     // 计算当前位置到局部地图各边的距离，并判断是否需要移动局部地图
     float dist_to_map_edge[3][2];
     bool need_move = false;
-    float effective_threshold = MOV_THRESHOLD * DET_RANGE; //min(MOV_THRESHOLD * DET_RANGE, (float)(cube_len * 0.3));
+    float effective_threshold = min(MOV_THRESHOLD * DET_RANGE, (float)(cube_len * 0.3));
     for (int i = 0; i < 3; i++){
         dist_to_map_edge[i][0] = fabs(pos_LiD(i) - LocalMap_Points.vertex_min[i]);
         dist_to_map_edge[i][1] = fabs(pos_LiD(i) - LocalMap_Points.vertex_max[i]);
@@ -597,13 +593,15 @@ void map_incremental( )
     //add_point_size = PointToAdd.size() + PointNoNeedDownsample.size();
     kdtree_incremental_time = omp_get_wtime() - st_time;
 
-    if(save_map){
-        std::lock_guard<std::mutex> lock(txt_save_mutex);
-        for (const auto& point : PointToAdd) {
-            accumulated_cloud->push_back(point);
-        }
-        for (const auto& point : PointNoNeedDownsample) {
-            accumulated_cloud->push_back(point);
+    if(save_map.load()){
+        {
+            std::lock_guard<std::mutex> lock(accumulated_cloud_mutex);
+            for (const auto& point : PointToAdd) {
+                accumulated_cloud->push_back(point);
+            }
+            for (const auto& point : PointNoNeedDownsample) {
+                accumulated_cloud->push_back(point);
+            }
         }
     }
 }

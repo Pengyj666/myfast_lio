@@ -52,8 +52,6 @@
 
 #define NUM_SCAN 3
 
-#define localization 0
-
 // 外部声明时间日志变量
 extern double T1[MAXN], s_plot[MAXN], s_plot2[MAXN], s_plot3[MAXN], s_plot4[MAXN], s_plot5[MAXN], s_plot6[MAXN], s_plot7[MAXN], s_plot8[MAXN], s_plot9[MAXN], s_plot10[MAXN], s_plot11[MAXN];
 extern bool   runtime_pos_log, pcd_save_en, time_sync_en, extrinsic_est_en, path_en;
@@ -65,10 +63,10 @@ extern double time_diff_lidar_to_imu;
 
 // 外部声明线程同步变量
 extern condition_variable sig_buffer;
-extern mutex txt_save_mutex;
 
 // 外部声明点云相关变量
 extern PointCloudXYZI::Ptr accumulated_cloud;
+extern mutex accumulated_cloud_mutex;
 extern string root_dir;
 extern string map_file_path, lid_topic, imu_topic;
 
@@ -78,13 +76,16 @@ extern double last_timestamp_lidar, last_timestamp_imu;
 extern double gyr_cov, acc_cov, b_gyr_cov, b_acc_cov;
 extern double filter_size_corner_min, filter_size_surf_min, filter_size_map_min, fov_deg;
 extern double cube_len, HALF_FOV_COS, FOV_DEG, total_distance, lidar_end_time, first_lidar_time;
-extern int    effct_feat_num, time_log_counter, scan_count, publish_count, num_scan;
+extern int    effct_feat_num, time_log_counter, scan_count, publish_count;
 extern int    iterCount, feats_down_size, NUM_MAX_ITERATIONS, laserCloudValidNum, pcd_save_interval, pcd_index;
 extern int    txt_save_interval;
 extern bool   point_selected_surf[100000];
 extern bool   flg_exit;
-
-
+extern int    scan_num;
+extern double lidar_mean_scantime;
+extern bool lidar_pushed ,flg_EKF_inited, flg_first_scan;
+extern MeasureGroup Measures;
+extern bool Localmap_Initialized ;
 // 外部声明容器变量
 extern vector<vector<int>>  pointSearchInd_surf;
 extern vector<BoxPointType> cub_needrm;
@@ -96,7 +97,9 @@ extern deque<PointCloudXYZI::Ptr>        lidar_buffer;
 extern deque<sensor_msgs::Imu::ConstPtr> imu_buffer;
 
 // 外部声明地图保存相关变量
-extern bool   save_map;
+extern std::atomic<bool> save_map;
+
+extern KD_TREE<PointType> ikdtree;
 
 // 外部声明点云指针变量
 extern PointCloudXYZI::Ptr featsFromMap;
@@ -107,7 +110,7 @@ extern PointCloudXYZI::Ptr laserCloudOri;
 extern PointCloudXYZI::Ptr corr_normvect;
 extern PointCloudXYZI::Ptr _featsArray;
 extern PointCloudXYZI::Ptr down_map;
-extern PointCloudXYZI::Ptr pcl_wait_pub;
+// extern PointCloudXYZI::Ptr pcl_wait_pub;
 extern PointCloudXYZI::Ptr pcl_wait_save;
 
 // 外部声明坐标点变量

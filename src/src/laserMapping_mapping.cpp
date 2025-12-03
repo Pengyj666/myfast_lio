@@ -1,4 +1,5 @@
 #include "laserMapping_mapping.h"
+#include "laserMapping_controller.h"
 
 /**
  * @brief 即时点，将点云从雷达坐标系转换到世界坐标系，并保存到点云中
@@ -43,9 +44,8 @@ bool loadExistingMap() {
  * 
  */
 void exportStaticMapExample( ) {
-
+    std::lock_guard<std::mutex> lock(accumulated_cloud_mutex);
     #if 1
-    std::lock_guard<std::mutex> lock(txt_save_mutex);
     int size = feats_undistort->points.size();
     // 创建用于存储世界坐标系下点云的新点云对象
     PointCloudXYZI::Ptr laserCloudWorld( \
@@ -70,41 +70,118 @@ void exportStaticMapExample( ) {
  * 
  * @param msg 保存地图的标志位，true表示保存地图，false表示取消保存地图。
  */
-bool save_map_cbk(std_srvs::SetBool::Request &req,std_srvs::SetBool::Response &res){
-    std::cout << "Debug: File=" << __FILE__ << ", Line=" << __LINE__ << ", Function=" << __FUNCTION__ << std::endl;
+const std::string k_meta_map_fn = "meta_map.txt";
+bool save_map_cbk(mower_msgs::TriggerRequest &req,mower_msgs::TriggerResponse &res){
+      ROS_INFO("===================saveMap_cbk===================== ");
 
-    struct stat info;
-    if (stat(string(string(ROOT_DIR) + "PCD/").c_str(), &info) != 0) {
-        res.success = false;
-        res.message = "Folder not found PCD";
-        return true;
+     	std::lock_guard<std::mutex> lock(accumulated_cloud_mutex);
+    if(!req.arg.empty()){
+        const std::string vmap_version = "V1";
+        string map_path = string(ROOT_DIR) + req.arg ;
+        if (map_path.back() != '/')
+            map_path += "/";
+
+        std::string lmap_path = map_path + "lmap/";
+         struct stat info;
+        if (!IsDirExisting(lmap_path.c_str())) {
+            CreateDir(lmap_path.c_str());
+        }
+        if (accumulated_cloud->size() > 0 ) {
+            bool expected = true;
+            save_map.compare_exchange_strong(expected,false);
+            
+            const std::string new_sm_name = GetCurTimeStamp_Sec();
+
+            string save_map_path = lmap_path + new_sm_name+ ".pcd";
+            printf("saveMap(): %s",save_map_path.c_str());
+                        
+            string all_points_dir(save_map_path);
+            pcl::PCDWriter pcd_writer;
+            pcd_writer.writeBinary(all_points_dir, *accumulated_cloud);
+
+            std::map<std::string, std::string> submaps;
+            // 先备份已存meta_map.txt
+            std::string meta_map_fn = lmap_path + k_meta_map_fn;
+           
+            if (!IsDirExisting(meta_map_fn.c_str())) {
+                std::ifstream fin(meta_map_fn);
+                std::string tmp_version, tmp_name;
+                while (fin >> tmp_name >> tmp_version) {
+                    if (tmp_version.size() == 2 && tmp_name.size() == 15) {
+                        submaps[tmp_name] = tmp_version;
+                    } else {
+                        break;
+                    }
+                }
+                fin.close();
+            }
+            submaps[new_sm_name] = vmap_version;
+            {
+                std::ofstream fout(meta_map_fn);
+                for (const auto &it : submaps) {
+                fout << it.first << " " << it.second << std::endl;
+                ROS_INFO("saveMap(): name=%s, version=%s", it.first.c_str(), it.second.c_str());
+                }
+                fout.close();
+                ROS_INFO("saveMap() done");
+            }
+
+
+            res.result = 1;
+            res.message = "Map saved to %s ",save_map_path.c_str() ;
+            ROS_INFO( "Map saved to %s", save_map_path.c_str());
+            accumulated_cloud->clear();
+        }else{
+            res.result = 0;
+            res.message = "No points to save or map not initialized";
+        }
     }
-    cout<<"req.data"<< req.data<<endl;
-    if(req.data){
-        save_map = true;
-        res.success = true;
-            // 初始化里程计文件
-        if (!odom_file_initialized) {
-            odom_file.open(string(string(ROOT_DIR) + "PCD/odometry_data.txt").c_str());
+    return true;
+}
+
+bool ctrl_mapping_cbk(mower_msgs::TriggerRequest &req,mower_msgs::TriggerResponse &res){
+    if(req.arg =="reset_lio" ){
+        ROS_INFO("ctrl_mapping_cbk(reset_lio) Resetting LIO ++++++");
+        is_running_.store(2);   //重置算法
+        res.result = 1;
+        res.message = "LIO reset.";
+        ROS_INFO_STREAM(res.message);
+
+    }else if(req.arg =="start_mapping" ){
+        save_map.store(true);
+        res.result = 1;
+        res.message = "Started mapping";
+
+        // 初始化里程计文件
+        if (!odom_file_initialized.load()) {
+            odom_file.open(string(string(ROOT_DIR) + "/odometry_data.txt").c_str());
             if (odom_file.is_open()) {
                 // 写入表头
                 odom_file << "timestamp,x,y,z,qx,qy,qz,qw,vx,vy,vz,wx,wy,wz" << std::endl;
-                odom_file_initialized = true;
+                odom_file_initialized.store(true);
             }
         }
-    }else{
-        save_map = false;
-        res.success = true;
-        if (odom_file_initialized) {
-            odom_file_initialized = false;
-            odom_file.close();
+    }else if(req.arg =="stop_mapping"){
+        save_map.store(false);
+        res.result = 1;
+        res.message = "Stopped mapping";
+    }else if(req.arg == "open_lio"){
+        if(is_running_.load() == 0){         //
+            is_running_.store(1);
         }
-  
-        res.message = "Cancel save map";
+
+        res.result = 1;
+        res.message = "LIO started successfully.";
+        ROS_INFO_STREAM(res.message);
+    }else if(req.arg == "close_lio"){
+        is_running_.store(2);
+        res.result = 1;
+        res.message = "LIO stopped and resources released.";
+        ROS_INFO_STREAM(res.message);
     }
-    cout<<"save map"<< save_map<<endl;
     return true;
 }
+
 
 void save_map_PclWaitSave()
 { 
@@ -135,7 +212,7 @@ void updatePCDHeaderPointCount(const string& file_path) {
 
 void save_map_accumulated_cloud()
 {
-    if (accumulated_cloud->size() > 0 && save_map == false) {
+    if (accumulated_cloud->size() > 0 && save_map.load() == false) {
 
         auto now = std::chrono::system_clock::now();
         auto time_t = std::chrono::system_clock::to_time_t(now);
@@ -143,8 +220,8 @@ void save_map_accumulated_cloud()
 
         // 格式化时间戳字符串
         std::stringstream timestamp_ss;
-        timestamp_ss << std::put_time(std::localtime(&time_t), "%Y%m%d_%H%M%S") << "_" << std::setfill('0') << std::setw(3) << ms.count();
-        string save_map_path = string(string(ROOT_DIR) + "PCD/map_") + timestamp_ss.str() + ".pcd";
+        // timestamp_ss << std::put_time(std::localtime(&time_t), "%Y%m%d_%H%M%S") << "_" << std::setfill('0') << std::setw(3) << ms.count();
+        string save_map_path = string(string(ROOT_DIR) + ".pcd");
 
         string all_points_dir(save_map_path);
         pcl::PCDWriter pcd_writer;
