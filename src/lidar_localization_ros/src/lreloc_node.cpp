@@ -29,14 +29,12 @@ void lreloc_node::cbSaveCurScan(const sensor_msgs::PointCloud2ConstPtr& pc_msg) 
 
         std::vector<int> indices;
         pcl::removeNaNFromPointCloud(*cur_scan, *cur_scan, indices);
-        lreloc->set_cur_scan(cur_scan);
-        lreloc->setCurScanTime(pc_msg->header.stamp.toSec());
+        lreloc->set_cur_scan(cur_scan,pc_msg->header.stamp.toSec());
         lreloc->setScanReceived(true);
     }
 }
 
 void lreloc_node::initialPoseCallback(const nav_msgs::OdometryConstPtr& msg) {
-    std::lock_guard<std::mutex> lock(initial_pose_mutex);
     if(lreloc->get_isLoadMap() == 2 ){
         Eigen::Matrix4f initial_pose = Eigen::Matrix4f::Identity();
     
@@ -88,7 +86,7 @@ void lreloc_node::initialPoseCallback(const nav_msgs::OdometryConstPtr& msg) {
             }
 
             Eigen::Matrix4f pose_map_to_odom = (initial_pose.inverse() * quat).eval();
-            lreloc->insert_initial_odom_queue(pose_map_to_odom,msg->header.stamp.toSec() - temp); //offsetTs.load()
+            lreloc->insert_initial_odom_queue(pose_map_to_odom,msg->header.stamp.toSec() - lreloc->getOffsetTs()); //offsetTs.load()
             lreloc->setPoseReceived(true);
         }
     }
@@ -143,7 +141,14 @@ bool lreloc_node::loadMapCallback(mower_msgs::TriggerRequest &req,mower_msgs::Tr
     }
 }
 
-
+bool lreloc_node::onoroff_relocation(mower_msgs::TriggerRequest &req,mower_msgs::TriggerResponse &res){
+    cout << "============bool lreloc_node::onoroff_relocation==========" << endl;
+    if(req.arg == "on"){
+        lreloc->set_isLoadMap(2);           //继续运行
+    }else if(req.arg == "off"){
+        lreloc->set_isLoadMap(4);
+    }
+}
 void lreloc_node::threadOdomPath(const std::string& file_path) {
         cout << "threadOdomPath++++++++++++++ " << std::endl;
     std::ifstream file(file_path);

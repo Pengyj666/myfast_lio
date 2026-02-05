@@ -290,18 +290,21 @@ bool LioHelper::sync_packages()
         if (Measures.lidar->points.size() <= 1)
         {
             lidar_end_time = Measures.lidar_beg_time + lidar_mean_scantime;
-            ROS_WARN("Too few input point cloud!\n");
+            // printf("Measures.lidar->points.size() <= 1 ------->lidar_end_time = %.9f , lidar_mean_scantime = %.9f, Measures.lidar_beg_time = %.9f \n", lidar_end_time, lidar_mean_scantime, Measures.lidar_beg_time);
+	        // ROS_WARN("Too few input point cloud!\n");
         }
         else if (Measures.lidar->points.back().curvature / double(1000) < 0.5 * lidar_mean_scantime)
         {
-            lidar_end_time = Measures.lidar_beg_time + lidar_mean_scantime;
-        }
+    		lidar_end_time = Measures.lidar_beg_time + lidar_mean_scantime;
+            // printf("Measures.lidar->points.back().curvature / double(1000) < 0.5 * lidar_mean_scantime ------->lidar_end_time = %.9f, lidar_mean_scantime = %.9f , Measures.lidar_beg_time = %.9f \n", lidar_end_time, lidar_mean_scantime, Measures.lidar_beg_time);
+	    }
         else
         {
             scan_num ++;
             lidar_end_time = Measures.lidar_beg_time + Measures.lidar->points.back().curvature / double(1000);
             lidar_mean_scantime += (Measures.lidar->points.back().curvature / double(1000) - lidar_mean_scantime) / scan_num;
-        }
+            // printf("Normal case ------->lidar_end_time = %.9f , Measures.lidar->points.back().curvature = %.9f,lidar_mean_scantime = %.9f, Measures.lidar_beg_time = %.9f \n", lidar_end_time,Measures.lidar->points.back().curvature, lidar_mean_scantime, Measures.lidar_beg_time);
+ 	    }
 
         if(lidar_type == MARSIM)
             lidar_end_time = Measures.lidar_beg_time;
@@ -381,6 +384,8 @@ void LioHelper::lasermap_fov_segment()
 
     LocalMap_Points = New_LocalMap_Points;
 
+    PointVector points_history;
+    ikdtree.acquire_removed_points(points_history);
     if(cub_needrm.size() > 0) ikdtree.Delete_Point_Boxes(cub_needrm);
 }
 
@@ -449,8 +454,8 @@ bool LioHelper::imu_pretreatment()
 {
     bool result = true;
     if(flg_first_scan){
-        p_imu->Reset();
-        Measures.imu.clear();
+        first_lidar_time = Measures.lidar_beg_time;
+        p_imu->first_lidar_time = first_lidar_time;
         flg_first_scan = false;
         result = false;   
     }
@@ -464,8 +469,6 @@ bool LioHelper::imu_pretreatment()
     if (feats_undistort->empty() || (feats_undistort == NULL))
     {
         ROS_WARN("IMU No point, skip this scan!\n");
-        first_lidar_time = Measures.lidar_beg_time;
-        p_imu->first_lidar_time = first_lidar_time;
         result = false; 
     }
 

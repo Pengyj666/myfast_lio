@@ -125,8 +125,12 @@ void LioCode::algorithmLoop() {
             // cout << "t3 at: " << static_cast<long long>((t3 -t2)* 1e6) << " microseconds" << endl;
             // cout << "t4 at: " << static_cast<long long>(t4 * 1e6) << " microseconds" << endl;
             // cout << "t5 at: " << static_cast<long long>((t5 -t3) * 1e6) << " microseconds" << endl;
-            double t6 = omp_get_wtime() - t0;
-            cout << "t6 at: " << static_cast<long long>(t6 * 1e6) << " us" << endl;
+            // double t6 = omp_get_wtime() - t0;
+            // cout << "t6 at: " << static_cast<long long>(t6 * 1e6) << " us" << endl;
+            // cout << lio_helper->ikdtree.size() << " map points in ikdtree." << endl;
+            // cout << lio_helper->ikdtree.validnum() << " validnum points in ikdtree." << endl;
+            // cout << lio_helper->imu_buffer.size() << " IMU points in buffer." << endl;
+            // cout << lio_helper->lidar_buffer.size() << " lidar_buffer points in first buffer element." << endl;
             // cout << "s_plot11 at: " << static_cast<long long>(s_plot11[0]* 1e6) << " microseconds" << endl;
         }
 

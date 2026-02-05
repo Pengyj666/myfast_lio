@@ -47,6 +47,7 @@ void lioNode::reset(){
 void lioNode::init_subAndpub(ros::NodeHandle &nh){
     sub_pcl = nh.subscribe(lid_topic, 5, &lioNode::standard_pcl_cbk,this);
     sub_imu = nh.subscribe(imu_topic, 5, &lioNode::imu_cbk,this);
+//   pub_imu_offset_ts = nh.advertise<sensor_msgs::Imu>("/as_lio/imu_offset_ts", 1);
     pubOffsetTs = nh.advertise<std_msgs::Float64>("/as_lio/offset_ts", 1);
     pubLaserCloudFull = nh.advertise<sensor_msgs::PointCloud2>
         ("/as_lio/cloud_registered", 3);
@@ -58,6 +59,8 @@ void lioNode::init_subAndpub(ros::NodeHandle &nh){
         ("/as_lio/org_lio", 3);
     pubOdomAftMappedBase = nh.advertise<nav_msgs::Odometry> 
         ("/as_lio/lio", 3);
+    pubOdomAftMappedBase_offset = nh.advertise<nav_msgs::Odometry> 
+        ("/as_lio/lio_offset", 3);
     pubPath          = nh.advertise<nav_msgs::Path> 
         ("/as_lio/lio_path", 3);
     serv_ctrl_mapping = nh.advertiseService("/as_lio/ctrl", &lioNode::ctrl_mapping_cbk,this);

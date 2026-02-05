@@ -3,8 +3,8 @@
 
     <arg name="rviz" default="true" />
 
-    <param name="map_voxel_size" type="double" value="0.1"/>
-    <param name="scan_voxel_size" type="double" value="0.1" />
+    <param name="map_voxel_size" type="double" value="0.2"/>
+    <param name="scan_voxel_size" type="double" value="0.2" />
     <param name="freq_localization" type="double" value="10" />
     <param name="localization_th" type="double" value="0.1" />
     <param name="lidar_d" type="double" value="-6.7" />

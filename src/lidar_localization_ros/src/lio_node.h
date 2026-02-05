@@ -54,16 +54,18 @@ private:
     ros::Publisher pubCloud_body;
     ros::Publisher pubOdomAftMapped;
     ros::Publisher pubOdomAftMappedBase ;
+    ros::Publisher pubOdomAftMappedBase_offset ;
     ros::Publisher pubPath ;
     ros::ServiceServer serv_ctrl_mapping;
     ros::ServiceServer serv_save_mapping;
-
+    // ros::Publisher pub_imu_offset_ts;
     // 轨迹路径消息，用于发布机器人的运动轨迹
     nav_msgs::Path path;
     // 里程计消息，存储滤波后的位置和姿态信息
     nav_msgs::Odometry odomAftMapped;
 
     nav_msgs::Odometry odomAftMappedBase;
+    nav_msgs::Odometry odomAftMappedBase_offset;
     // 四元数消息，用于表示机器人姿态
     geometry_msgs::Quaternion geoQuat;
     // 位姿消息，包含机器人在body坐标系下的位姿信息
@@ -72,6 +74,7 @@ private:
     mutex accumulated_cloud_mutex;
     PointCloudXYZI::Ptr accumulated_cloud;
     
+    std::atomic<double>  OffsetTimer_double = {0.0};
     std::atomic<bool>  odom_file_initialized = {false};
     std::atomic<bool> path_en = {true};
     std::atomic<bool> save_map{false};

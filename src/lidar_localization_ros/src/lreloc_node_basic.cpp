@@ -14,8 +14,10 @@ lreloc_node::lreloc_node(ros::NodeHandle& nh) :
     path_pub = nh.advertise<nav_msgs::Path>("/odom_path_test", 3);
     initial_pose_sub = nh.subscribe<nav_msgs::Odometry>("/odom_fused", 3, &lreloc_node::initialPoseCallback, this);
     subOffsetTs = nh.subscribe<std_msgs::Float64>("/as_lio/offset_ts", 3, &lreloc_node::callback_lio_offset_ts, this);
+
     // Service
     serv_load_mapping_ = nh.advertiseService("/as_lio/loadmap", &lreloc_node::loadMapCallback,this);
+    serv_onOroff_relocation_ = nh.advertiseService("/as_lio/onoroff_relocation", &lreloc_node::onoroff_relocation,this);
     cur_odom_queue.reset(2048);
 }
 

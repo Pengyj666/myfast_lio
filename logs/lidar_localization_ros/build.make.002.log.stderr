@@ -1,0 +1,4 @@
+[01m[K/home/edy/code/githubSlam/FAST_LIO/src/lidar_localization_ros/src/lreloc_node.cpp:[m[K In member function ‘[01m[Kbool lreloc_node::onoroff_relocation(mower_msgs::TriggerRequest&, mower_msgs::TriggerResponse&)[m[K’:
+[01m[K/home/edy/code/githubSlam/FAST_LIO/src/lidar_localization_ros/src/lreloc_node.cpp:151:1:[m[K [01;35m[Kwarning: [m[Kno return statement in function returning non-void [[01;35m[K-Wreturn-type[m[K]
+  151 | [01;35m[K}[m[K
+      | [01;35m[K^[m[K

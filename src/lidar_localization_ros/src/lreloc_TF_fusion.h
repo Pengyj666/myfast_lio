@@ -56,4 +56,4 @@ public:
     void pub_reloc_result(Eigen::Matrix4d &T_map_to_base_link,nav_msgs::Odometry& localization_base);
 };
 
-#endif // TRANSFORM_FUSION_H
+#endif // LRELOC_TF_FUSION_H

@@ -3,26 +3,209 @@
 Icp3d::~Icp3d(){
     kdtree.clear();
 }
+
+bool Icp3d::computeNormalVector(const PointT& query_point, const PointVector& neighbors, PointT& normal_out) {
+    if (neighbors.size() < 3) {
+        return false; // 至少需要3个点才能计算法向量
+    }
+
+    // 构建协方差矩阵
+    Eigen::Matrix3d covariance_matrix = Eigen::Matrix3d::Zero();
+    Eigen::Vector3d centroid(0, 0, 0);
+
+    // 计算质心
+    for (const auto& pt : neighbors) {
+        centroid += Eigen::Vector3d(pt.x, pt.y, pt.z);
+    }
+    centroid /= neighbors.size();
+
+    // 计算协方差矩阵
+    for (const auto& pt : neighbors) {
+        Eigen::Vector3d point_vec(pt.x, pt.y, pt.z);
+        Eigen::Vector3d diff = point_vec - centroid;
+        covariance_matrix += diff * diff.transpose();
+    }
+
+    // 计算特征值和特征向量
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(covariance_matrix);
+    if (solver.info() != Eigen::Success) {
+        return false;
+    }
+
+    // 最小特征值对应的特征向量是法向量
+    Eigen::Vector3d normal = solver.eigenvectors().col(0);
+    normal.normalize();
+
+    // 确保法向量指向观察点
+    Eigen::Vector3d view_dir(query_point.x - centroid(0), query_point.y - centroid(1), query_point.z - centroid(2));
+    if (normal.dot(view_dir) > 0) {
+        normal = -normal;
+    }
+
+    normal_out.normal_x = static_cast<float>(normal(0));
+    normal_out.normal_y = static_cast<float>(normal(1));
+    normal_out.normal_z = static_cast<float>(normal(2));
+
+    return true;
+}
+
+// 在 kdtree_bulid 函数中修改法向量计算部分
+void Icp3d::kdtree_bulid(int scale, pcl::PointCloud<pcl::PointXYZINormal>::Ptr& map_cloud){
+   	if (kdtree.Root_Node != nullptr) {
+        cout << "============kdtree_bulid clear kdtree==========" << endl;
+        kdtree.Reset_Tree();
+    }
+    if (!map_cloud || map_cloud->empty()) {
+        printf("Empty or null map cloud provided to kdtree_bulid");
+        return;
+    }
+     printf("Map cloud has %zu points\n", map_cloud->size());
+    // 首先确保输入点云中的所有点都是有限的
+    pcl::PointCloud<pcl::PointXYZINormal>::Ptr clean_map_cloud(new pcl::PointCloud<pcl::PointXYZINormal>());
+    for (const auto& point : map_cloud->points) {
+        if (pcl::isFinite(point) && 
+            std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z) &&
+            std::abs(point.x) < 1000.0 && std::abs(point.y) < 1000.0 && std::abs(point.z) < 1000.0) {
+            clean_map_cloud->points.push_back(point);
+        }
+    }
+    
+    if (clean_map_cloud->empty()) {
+        printf("Cleaned map cloud is empty");
+        return;
+    }
+   
+    float voxel_size = MAP_VOXEL_SIZE * scale;
+    // 对地图点云进行降采样
+    pcl::PointCloud<pcl::PointXYZINormal>::Ptr downsampled_map(new pcl::PointCloud<pcl::PointXYZINormal>());
+    {
+        pcl::VoxelGrid<pcl::PointXYZINormal> voxel;  // 使用正确的类型
+        voxel.setInputCloud(clean_map_cloud);
+        // 对于Z轴方向使用更小的体素尺寸以保持精度
+        if (scale <= 1.0) {
+            voxel.setLeafSize(voxel_size, voxel_size, voxel_size * 0.5);
+        } else {
+            voxel.setLeafSize(voxel_size, voxel_size, voxel_size* 0.5);
+        }
+        voxel.filter(*downsampled_map);
+    }
+
+    pcl::PointCloud<pcl::PointXYZINormal>::Ptr filtered_map(new pcl::PointCloud<pcl::PointXYZINormal>());
+
+    // 再次清理地图点云
+    for (const auto& point : downsampled_map->points) {
+        if (pcl::isFinite(point) && 
+            std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z) &&
+            std::abs(point.x) < 1000.0 && std::abs(point.y) < 1000.0 && std::abs(point.z) < 1000.0) {
+            filtered_map->points.push_back(point);
+        }
+    }
+    
+    if (filtered_map->empty()) {
+        printf("Filtered map cloud is empty after preprocessing");
+        return;
+    }
+
+    // 使用IKD-Tree计算法向量（替代原来的PCL NormalEstimation）
+    printf("Computing normals using IKD-Tree with %zu points\n", filtered_map->size());
+    
+    // 临时构建一个IKD-Tree用于法向量计算
+     KD_TREE<pcl::PointXYZINormal>* temp_kdtree = new KD_TREE<pcl::PointXYZINormal>();
+    temp_kdtree->Build(filtered_map->points);
+    
+    // 为每个点计算法向量
+    const int k_neighbors = 10; // 用于法向量计算的邻居数量
+    for (size_t i = 0; i < filtered_map->size(); ++i) {
+        PointT& current_point = filtered_map->points[i];
+        
+        PointVector nearby_points;
+        std::vector<float> distances;
+        temp_kdtree->Nearest_Search(current_point, k_neighbors, nearby_points, distances);
+        
+        if (nearby_points.size() >= 3) {
+            PointT normal_vector;
+            if (computeNormalVector(current_point, nearby_points, normal_vector)) {
+                // 将计算出的法向量赋给当前点
+                current_point.normal_x = normal_vector.normal_x;
+                current_point.normal_y = normal_vector.normal_y;
+                current_point.normal_z = normal_vector.normal_z;
+            } else {
+                // 如果计算失败，设置默认法向量
+                current_point.normal_x = 0.0f;
+                current_point.normal_y = 0.0f;
+                current_point.normal_z = 1.0f;
+            }
+        } else {
+            // 邻居点不够，设置默认法向量
+            current_point.normal_x = 0.0f;
+            current_point.normal_y = 0.0f;
+            current_point.normal_z = 1.0f;
+        }
+    }
+    
+    // 清理临时KDTree
+        try {
+        if (temp_kdtree->Root_Node != nullptr) {
+            temp_kdtree->Reset_Tree();
+        }
+        delete temp_kdtree;
+        temp_kdtree = nullptr;
+    } catch (...) {
+        printf("Error during temp_kdtree cleanup\n");
+        delete temp_kdtree;  // 即使出错也要删除
+        temp_kdtree = nullptr;
+    }
+    // 构建KD树前检查点云大小
+    printf("Building main KD tree with %zu points\n", filtered_map->size());
+    
+    // 构建主KD树（用于ICP匹配）
+    kdtree.set_downsample_param(MAP_VOXEL_SIZE);
+    kdtree.Build(filtered_map->points);
+    printf("Main KD tree built with %d nodes\n", kdtree.size());
+}
+
 // 在 pointToPlaneICP 前预处理点云
 pcl::PointCloud<PointT>::Ptr Icp3d::preprocessCloud(
     const pcl::PointCloud<PointT>::Ptr& cloud,
     float voxel_size) {
     // 1. 离群点过滤
     pcl::PointCloud<PointT>::Ptr cloud_filtered(new pcl::PointCloud<PointT>);
+
+    pcl::PointCloud<PointT>::Ptr valid_cloud(new pcl::PointCloud<PointT>);
+    for (const auto& point : cloud->points) {
+        if (pcl::isFinite(point) && 
+            std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z) &&
+            std::isfinite(point.normal_x) && std::isfinite(point.normal_y) && std::isfinite(point.normal_z) &&
+            std::abs(point.x) < 10000.0 && std::abs(point.y) < 10000.0 && std::abs(point.z) < 10000.0) {
+            valid_cloud->points.push_back(point);
+        }
+    }
+    if (valid_cloud->size() > 50) {
     pcl::StatisticalOutlierRemoval<PointT> sor;
-    sor.setInputCloud(cloud);
+    sor.setInputCloud(valid_cloud);
     sor.setMeanK(50); // 邻域点数
     sor.setStddevMulThresh(1.5); // 标准差阈值（大于该值视为离群点）
     sor.filter(*cloud_filtered);
+    } else {
+        *cloud_filtered = *valid_cloud;
+    }
+    // 2. 降采样
+    pcl::PointCloud<PointT>::Ptr cloud_down(new pcl::PointCloud<PointT>);
+    if (!cloud_filtered->empty()) {
+        pcl::VoxelGrid<PointT> vg;
+        vg.setInputCloud(cloud_filtered);
+        vg.setLeafSize(voxel_size, voxel_size, voxel_size);
+        vg.filter(*cloud_down);
+    } else {
+        *cloud_down = *valid_cloud;  // 如果滤波后为空，使用原始有效点云
+    }
 
-    // // 2. 降采样
-    // pcl::PointCloud<PointT>::Ptr cloud_down(new pcl::PointCloud<PointT>);
-    // pcl::VoxelGrid<PointT> vg;
-    // vg.setInputCloud(cloud_filtered);
-    // vg.setLeafSize(voxel_size, voxel_size, voxel_size);
-    // vg.filter(*cloud_down);
-
-    return cloud_filtered;
+    if (!cloud_down->empty()) {
+        std::vector<int> indices;
+        pcl::removeNaNFromPointCloud(*cloud_down, *cloud_down, indices);
+        pcl::removeNaNNormalsFromPointCloud(*cloud_down, *cloud_down, indices);
+    }
+    return cloud_down;
 }
 
 // 使用中心差分计算雅可比矩阵的示例函数
@@ -116,6 +299,10 @@ std::pair<Eigen::Matrix4f, double> Icp3d::pointToPlaneICP(
     double source_size,
     double transformation_epsilon 
 ) {
+    if(!source || source->empty()){
+        printf("Empty source point cloud");
+        return {initial, std::numeric_limits<double>::max()};
+    }
     // 预处理源点云
     auto source_down = preprocessCloud(source, source_size);
     
@@ -126,6 +313,12 @@ std::pair<Eigen::Matrix4f, double> Icp3d::pointToPlaneICP(
     // 检查目标点云和KD树
     if (!target || target->empty()) {
         printf("Empty target point cloud");
+        return {initial, std::numeric_limits<double>::max()};
+    }
+    
+    // 确保 IKD 树中有足够的点进行搜索
+    if (kdtree.size() < NUM_MATCH_POINTS) {
+        printf("IKD-Tree has insufficient points: %d, required: %d\n", kdtree.size(), NUM_MATCH_POINTS);
         return {initial, std::numeric_limits<double>::max()};
     }
     
@@ -160,25 +353,28 @@ std::pair<Eigen::Matrix4f, double> Icp3d::pointToPlaneICP(
             PointVector points_near;
             std::vector<float> pointNKNSquaredDistance(NUM_MATCH_POINTS);
             
-            // 使用kd-tree搜索最近邻点
-            // 确保 KD 树和目标点云包含足够的点以避免底层搜索越界
-            if (kdtree.size() >= NUM_MATCH_POINTS && target->size() >= static_cast<size_t>(NUM_MATCH_POINTS)) {
+            // 使用IKD-Tree搜索最近邻点
+            // 确保 IKD 树包含足够的点以避免底层搜索越界
+            if (kdtree.size() >= NUM_MATCH_POINTS) {
                 kdtree.Nearest_Search(point_world, NUM_MATCH_POINTS, points_near, pointNKNSquaredDistance);
             } else {
-                 // printf("Skip nearest search: kdtree.size()=%d, target->size()=%zu\n", kdtree.size(), target->size());
+                printf("Skip nearest search: IKD-Tree size=%d, required=%d\n", kdtree.size(), NUM_MATCH_POINTS);
                 continue;
             }
             
             // 检查是否有足够的近邻点
-            bool point_selected = (points_near.size() >= NUM_MATCH_POINTS) && 
-                                (pointNKNSquaredDistance[NUM_MATCH_POINTS - 1] <= 7.0f);
+            if (points_near.size() < NUM_MATCH_POINTS) {
+                continue; // 邻居点不够
+            }
+            
+            bool point_selected = (pointNKNSquaredDistance[NUM_MATCH_POINTS - 1] <= 5.0f);
             
             if (!point_selected) continue;
             
             // 如果有足够的近邻点，估计局部平面
             if (points_near.size() >= NUM_MATCH_POINTS) {
                 Eigen::Matrix<float, 4, 1> pabcd;
-                if (esti_plane(pabcd, points_near, 0.6f)) {
+                if (esti_plane<float>(pabcd, points_near, 0.07f)) {
                     // 计算点到平面的距离作为残差
                     float pd2 = pabcd(0) * point_world.x + 
                                 pabcd(1) * point_world.y + 
@@ -189,33 +385,26 @@ std::pair<Eigen::Matrix4f, double> Icp3d::pointToPlaneICP(
                     float point_norm = sqrt(point_world.x * point_world.x + 
                                         point_world.y * point_world.y + 
                                         point_world.z * point_world.z);
-                    
-                    // 避免除零错误
-                    float s = 1.0f - 0.9f * fabs(pd2) / (point_norm + 1e-6f);
-                    
-                    if (s > 0.9f) {
-                        // 存储残差
-                        residuals.push_back(-pd2);
-                        
-                        // // 计算雅可比矩阵
-                        // Eigen::Matrix<double, 1, 6> jacobian;
-                        // Eigen::Vector3d norm_vec(pabcd(0), pabcd(1), pabcd(2));
-                        // Eigen::Vector3d point(point_world.x, point_world.y, point_world.z);
-                        
-                        // // 对于点到平面的雅可比矩阵:
-                        // // [nx, ny, nz, nz*py - ny*pz, nx*pz - nz*px, ny*px - nx*py]
-                        // jacobian(0) = norm_vec(0);
-                        // jacobian(1) = norm_vec(1);
-                        // jacobian(2) = norm_vec(2);
-                        // jacobian(3) = norm_vec(2) * point(1) - norm_vec(1) * point(2);
-                        // jacobian(4) = norm_vec(0) * point(2) - norm_vec(2) * point(0);
-                        // jacobian(5) = norm_vec(1) * point(0) - norm_vec(0) * point(1);
-                        
-                        // jacobians.push_back(jacobian);
 
-                        // 使用中心差分计算雅可比矩阵
+                    float s_geo = 1.0f - 0.9f * fabs(pd2) / (point_norm + 1e-8f);
+
+                    // // 使用高斯衰减并设置下限，d0 控制衰减尺度
+                    // const double d0 = 40.0; // 衰减尺度（米），可调
+                    // const double w_min = 0.2; // 置信度下限
+                    // double distance_conf = exp(- (point_norm * point_norm) / (d0 * d0));
+                    // if (distance_conf < w_min) distance_conf = w_min;
+
+                    // // 总权重：几何置信度乘以距离衰减（并裁到 0..1）
+                    // double weight = (double)s_geo * distance_conf;
+                    // if (weight > 0.9) weight = weight; 
+                    if (s_geo > 0.9f) {
+                        // 存储加权残差
+                        residuals.push_back(-pd2); //*weight;
+                        
+                        // 使用中心差分计算雅可比矩阵，并按相同权重缩放雅可比
                         Eigen::Matrix<double, 1, 6> jacobian = computeJacobianCentralDifference(
                             point_world, pabcd, transformation);
+                        // jacobian *= weight;
                         jacobians.push_back(jacobian);
                         effective_points++;
                     }
@@ -225,7 +414,11 @@ std::pair<Eigen::Matrix4f, double> Icp3d::pointToPlaneICP(
         
         // 检查是否有足够的有效对应点
         if (effective_points < 15) { 
-            printf("Not enough effective points (%d) in ICP iteration %d", effective_points, iter);
+            printf("Not enough effective points (%d) in ICP iteration %d, minimum required: 15\n", effective_points, iter);
+            if (iter == 0) {
+                // 第一次迭代就失败，直接返回
+                return {initial, std::numeric_limits<double>::max()};
+            }
             break;
         }
         
@@ -248,15 +441,9 @@ std::pair<Eigen::Matrix4f, double> Icp3d::pointToPlaneICP(
         this_fitness = sqrt(sum_sq_residual / effective_points);
         // 检查收敛性
         if (delta.norm() < transformation_epsilon) {
-            // // 计算最终的匹配度评分
-            // double sum_sq_residual = 0.0;
-            // for (const auto& res : residuals) {
-            //     sum_sq_residual += res * res;
-            // }
-            // final_fitness = sqrt(sum_sq_residual / effective_points);
             final_fitness = this_fitness;
             break;
-        }else if(final_fitness >= this_fitness){
+        } else if(final_fitness >= this_fitness) {
             final_fitness = this_fitness;
         }
         
@@ -285,86 +472,3 @@ std::pair<Eigen::Matrix4f, double> Icp3d::pointToPlaneICP(
     return std::make_pair(transformation, final_fitness);
 }
 #endif
-
-void Icp3d::kdtree_bulid(int scale, pcl::PointCloud<pcl::PointXYZINormal>::Ptr& map_cloud){
-    if (kdtree.Root_Node != nullptr) {
-        cout << "============kdtree_bulid clear kdtree==========" << endl;
-        kdtree.Reset_Tree();
-    }
-    if (!map_cloud || map_cloud->empty()) {
-        printf("Empty or null map cloud provided to kdtree_bulid");
-        return;
-    }
-    
-    // 首先确保输入点云中的所有点都是有限的
-    pcl::PointCloud<pcl::PointXYZINormal>::Ptr clean_map_cloud(new pcl::PointCloud<pcl::PointXYZINormal>());
-    for (const auto& point : map_cloud->points) {
-        if (pcl::isFinite(point) && 
-            std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z) &&
-            std::abs(point.x) < 1000.0 && std::abs(point.y) < 1000.0 && std::abs(point.z) < 1000.0) {
-            clean_map_cloud->points.push_back(point);
-        }
-    }
-    
-    if (clean_map_cloud->empty()) {
-        printf("Cleaned map cloud is empty");
-        return;
-    }
-    
-    float voxel_size = MAP_VOXEL_SIZE * scale;
-    // 对地图点云进行降采样
-    pcl::PointCloud<pcl::PointXYZINormal>::Ptr downsampled_map(new pcl::PointCloud<pcl::PointXYZINormal>());
-    {
-        pcl::VoxelGrid<pcl::PointXYZINormal> voxel;  // 使用正确的类型
-        voxel.setInputCloud(clean_map_cloud);
-        // 对于Z轴方向使用更小的体素尺寸以保持精度
-        if (scale <= 1.0) {
-            voxel.setLeafSize(voxel_size, voxel_size, voxel_size * 0.5);
-        } else {
-            voxel.setLeafSize(voxel_size, voxel_size, voxel_size* 0.5);
-        }
-        voxel.filter(*downsampled_map);
-    }
-
-    pcl::PointCloud<pcl::PointXYZINormal>::Ptr filtered_map(new pcl::PointCloud<pcl::PointXYZINormal>());
-
-    // 再次清理地图点云
-    for (const auto& point : downsampled_map->points) {
-        if (pcl::isFinite(point) && 
-            std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z) &&
-            std::abs(point.x) < 1000.0 && std::abs(point.y) < 1000.0 && std::abs(point.z) < 1000.0) {
-            filtered_map->points.push_back(point);
-        }
-    }
-    
-    if (filtered_map->empty()) {
-        printf("Filtered map cloud is empty after preprocessing");
-        return;
-    }
-
-    // 为 filtered_map 计算法向量（用于点面 ICP）
-    if (!filtered_map->empty()) {
-        pcl::PointCloud<pcl::Normal>::Ptr down_normals(new pcl::PointCloud<pcl::Normal>);
-        pcl::NormalEstimation<pcl::PointXYZINormal, pcl::Normal> down_norm_est;  // 使用正确的类型
-        pcl::search::KdTree<pcl::PointXYZINormal>::Ptr down_tree(new pcl::search::KdTree<pcl::PointXYZINormal>);  // 使用正确的类型
-        down_norm_est.setInputCloud(filtered_map);
-        down_norm_est.setSearchMethod(down_tree);
-        down_norm_est.setKSearch(10);
-        down_norm_est.compute(*down_normals);
-
-        // 将法向量赋回 filtered_map
-        for (size_t i = 0; i < filtered_map->size() && i < down_normals->size(); ++i) {
-            filtered_map->points[i].normal_x = down_normals->points[i].normal_x;
-            filtered_map->points[i].normal_y = down_normals->points[i].normal_y;
-            filtered_map->points[i].normal_z = down_normals->points[i].normal_z;
-        }
-    }
-    
-    // 构建KD树前检查点云大小
-    printf("Building KD tree with %zu points\n", filtered_map->size());
-    
-    // 构建KD树
-    kdtree.Build(filtered_map->points);
-    
-    printf("KD tree built with %d nodes\n", kdtree.size());
-}

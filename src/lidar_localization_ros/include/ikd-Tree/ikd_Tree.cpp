@@ -270,7 +270,7 @@ void KD_TREE<PointType>::multi_thread_rebuild(){
 
             // 锁定删除点缓存，将旧子树展平为点云存储到 Rebuild_PCL_Storage 中
             pthread_mutex_lock(&points_deleted_rebuild_mutex_lock);    
-            flatten(*Rebuild_Ptr, Rebuild_PCL_Storage, MULTI_THREAD_REC);
+            flatten(*Rebuild_Ptr, Rebuild_PCL_Storage, NOT_RECORD);   //MULTI_THREAD_REC
             pthread_mutex_unlock(&points_deleted_rebuild_mutex_lock);
 
             // 解锁搜索操作
@@ -406,16 +406,38 @@ void KD_TREE<PointType>::run_operation(KD_TREE_NODE ** root, Operation_Logger_Ty
 
 template <typename PointType>
 void KD_TREE<PointType>::Build(PointVector point_cloud){
+// 阻塞新搜索，等待现有搜索结束后再修改树结构
+    pthread_mutex_lock(&search_flag_mutex);
+    while (search_mutex_counter != 0){
+        pthread_mutex_unlock(&search_flag_mutex);
+        usleep(100);
+        pthread_mutex_lock(&search_flag_mutex);
+    }
+    // set sentinel to block new searches
+    search_mutex_counter = -1;
+    pthread_mutex_unlock(&search_flag_mutex);
+
     if (Root_Node != nullptr){
         delete_tree_nodes(&Root_Node);
     }
-    if (point_cloud.size() == 0) return;
+    if (point_cloud.size() == 0) {
+        // restore search counter
+        pthread_mutex_lock(&search_flag_mutex);
+        search_mutex_counter = 0;
+        pthread_mutex_unlock(&search_flag_mutex);
+        return;
+    }
     STATIC_ROOT_NODE = new KD_TREE_NODE;
     InitTreeNode(STATIC_ROOT_NODE); 
     BuildTree(&STATIC_ROOT_NODE->left_son_ptr, 0, point_cloud.size()-1, point_cloud);
     Update(STATIC_ROOT_NODE);
     STATIC_ROOT_NODE->TreeSize = 0;
     Root_Node = STATIC_ROOT_NODE->left_son_ptr;    
+
+    // 恢复搜索计数器，允许搜索继续
+    pthread_mutex_lock(&search_flag_mutex);
+    search_mutex_counter = 0;
+    pthread_mutex_unlock(&search_flag_mutex);    
 }
 
 template <typename PointType>
@@ -792,7 +814,7 @@ void KD_TREE<PointType>::Rebuild(KD_TREE_NODE ** root){
         father_ptr = (*root)->father_ptr;
         int size_rec = (*root)->TreeSize;
         PCL_Storage.clear();
-        flatten(*root, PCL_Storage, DELETE_POINTS_REC);
+        flatten(*root, PCL_Storage, NOT_RECORD);         // DELETE_POINTS_REC
         delete_tree_nodes(root);
         BuildTree(root, 0, PCL_Storage.size()-1, PCL_Storage);
         if (*root != nullptr) (*root)->father_ptr = father_ptr;
@@ -1797,16 +1819,34 @@ int MANUAL_Q<T>::size(){
 
 template<typename PointType>
 void KD_TREE<PointType>::clear() {
-    if (Root_Node != nullptr) {
-        stop_thread();
-        Delete_Storage_Disabled = true;
-        delete_tree_nodes(&Root_Node);
-        PointVector().swap(PCL_Storage);
-        Rebuild_Logger.clear();
-        STATIC_ROOT_NODE = nullptr;
-        Rebuild_Ptr = nullptr;
-        Root_Node = nullptr;
+    stop_thread();
+
+    // block new searches
+    pthread_mutex_lock(&search_flag_mutex);
+    while (search_mutex_counter != 0){
+        pthread_mutex_unlock(&search_flag_mutex);
+        usleep(100);
+        pthread_mutex_lock(&search_flag_mutex);
     }
+    search_mutex_counter = -1;
+    pthread_mutex_unlock(&search_flag_mutex);
+
+    Delete_Storage_Disabled = true;
+    delete_tree_nodes(&Root_Node);
+    PointVector().swap(PCL_Storage);
+    Rebuild_Logger.clear();
+    if (STATIC_ROOT_NODE != nullptr) {
+        delete_tree_nodes(&STATIC_ROOT_NODE); // 递归删除静态根节点（原 Build 函数创建）
+        STATIC_ROOT_NODE = nullptr; // 置空静态根节点指针
+    }
+
+    Rebuild_Ptr = nullptr;
+    Root_Node = nullptr;
+
+    // restore and allow searches
+    pthread_mutex_lock(&search_flag_mutex);
+    search_mutex_counter = 0;
+    pthread_mutex_unlock(&search_flag_mutex);
     return;
 }
 
@@ -1831,7 +1871,7 @@ bool KD_TREE<PointType>::Reset_Tree() {
             printf("Reset_Tree: 所有搜索线程已退出");
         }
         if (Root_Node != nullptr) {
-            // delete_tree_nodes(&Root_Node); // 递归删除实际根节点及其子树
+            delete_tree_nodes(&Root_Node); // 递归删除实际根节点及其子树
             Root_Node = nullptr; // 置空根节点指针
         }
         if (STATIC_ROOT_NODE != nullptr) {

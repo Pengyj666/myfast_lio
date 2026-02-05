@@ -82,8 +82,11 @@ void lrelocTFFusion::pub_reloc_lio_path(Eigen::Matrix4d &T_map_to_base_link,geom
     msg_body_pose.pose.orientation.w = quat_result.w();
     reloc_Path.header.frame_id = "map";
     static int count = 0;
+    static int jjj = 0;
 
-    if(count >= 500){
+    count++;
+    if(count >= 5000){
+        --count;
         reloc_Path.poses.push_back(msg_body_pose);
         reloc_Path.poses.erase(reloc_Path.poses.begin());  
     }else{
@@ -91,9 +94,8 @@ void lrelocTFFusion::pub_reloc_lio_path(Eigen::Matrix4d &T_map_to_base_link,geom
     }
     reloc_Path.header.stamp = ros::Time::now();
 
-
-    if (++count % 10 == 0) {
-        count = 0;
+    if (++jjj % 5 == 0) {
+        jjj = 0;
         pub_reloc_Path.publish(reloc_Path);
     }
 

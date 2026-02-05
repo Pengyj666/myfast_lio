@@ -57,14 +57,13 @@ private:
     ros::Subscriber subOffsetTs;
     ros::Subscriber initial_pose_sub;
     ros::ServiceServer serv_load_mapping_;
-    ros::ServiceServer serv_open_relocation_;
+    ros::ServiceServer serv_onOroff_relocation_;
 
     utils::TimedQueue<Eigen::Matrix4f> cur_odom_queue;
     std::unique_ptr<std::thread> odom_path_thread_ptr;
     pcl::PointCloud<PointT>::Ptr cur_scan;
 
     std::mutex cur_odom_mutex;
-    std::mutex initial_pose_mutex;
 
     double lidar_d;
     double FREQ_LOCALIZATION;
@@ -84,6 +83,7 @@ public:
     void cbSaveCurScan(const sensor_msgs::PointCloud2ConstPtr& pc_msg);
     void initialPoseCallback(const nav_msgs::OdometryConstPtr& msg);
     bool loadMapCallback(mower_msgs::TriggerRequest &req, mower_msgs::TriggerResponse &res);
+    bool onoroff_relocation(mower_msgs::TriggerRequest &req, mower_msgs::TriggerResponse &res);
 
 
     // 发布函数

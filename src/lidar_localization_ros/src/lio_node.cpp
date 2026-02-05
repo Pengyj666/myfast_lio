@@ -121,16 +121,19 @@ void lioNode::publish_path( )
     msg_body_pose.header.frame_id = "map";
 
     /*** if path is too large, the rvis will crash ***/
+    static int count = 0;
     static int jjj = 0;
-    jjj++;
-    if(jjj >= 500){
+    ++count;
+    ++jjj;
+    if(count >= 5000){
+        --count;
         path.poses.erase(path.poses.begin());  
         path.poses.push_back(msg_body_pose);
     }else{
         path.poses.push_back(msg_body_pose);
     }
-    
-    if(jjj % 10 == 0){
+
+    if(jjj % 5 == 0){
         pubPath.publish(path);
         jjj = 0;
     }
@@ -154,9 +157,24 @@ void lioNode::publish_odometry()
     odomAftMappedBase.header = odomAftMapped.header;
     odomAftMappedBase.child_frame_id = "body_base";
     odomAftMappedBase.header.stamp = ros::Time().fromSec(lio_helper->lidar_end_time);
+    odomAftMappedBase_offset.header = odomAftMapped.header;
+    odomAftMappedBase_offset.child_frame_id = "body_base_offset";
+    odomAftMappedBase_offset.header.stamp = ros::Time().fromSec(lio_helper->lidar_end_time + OffsetTimer_double.load());
+    // 发布里程计消息
+        set_posestamp(odomAftMapped.pose);
+    pubOdomAftMapped.publish(odomAftMapped);
+    set_basepose(odomAftMappedBase.pose);
 
-    // 填充位姿信息
-    set_posestamp(odomAftMapped.pose);
+    pubOdomAftMappedBase.publish(odomAftMappedBase);
+
+    set_basepose(odomAftMappedBase_offset.pose);
+    pubOdomAftMappedBase_offset.publish(odomAftMappedBase_offset);
+
+
+        // printf("Publishing base pose: x=%.6f, y=%.6f, z=%.6f\n",
+        //    odomAftMappedBase.pose.pose.position.x,
+        //    odomAftMappedBase.pose.pose.position.y,
+        //    odomAftMappedBase.pose.pose.position.z);
      // 添加保存到txt文件的代码
     if (odom_file.is_open() && odom_file_initialized.load()) {
         odom_file << std::fixed << std::setprecision(9) 
@@ -177,12 +195,15 @@ void lioNode::publish_odometry()
                   << std::endl;
     }
 
-    // 发布里程计消息
-    pubOdomAftMapped.publish(odomAftMapped);
-    set_basepose(odomAftMappedBase.pose);
+      auto P =lio_helper->kf.get_P();
 
-    pubOdomAftMappedBase.publish(odomAftMappedBase);
-    auto P =lio_helper->kf.get_P();
+    double pos_cov = (P(0,0) + P(1,1) + P(2,2)) / 3.0;
+    double rot_cov = (P(3,3) + P(4,4) + P(5,5)) / 3.0;
+
+    if (pos_cov > 1.0 || rot_cov > 1.0) {
+        ROS_WARN("High covariance detected - system may be diverging!");
+        // check_and_apply_constraints();
+    }
     // 从卡尔曼滤波器获取协方差矩阵，并重新排列以适配ROS标准格式
     for (int i = 0; i < 6; i ++)
     {
@@ -261,7 +282,11 @@ void lioNode::imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
             if (dts > 0.0) {
                 std_msgs::Float64 msg;
                 msg.data = OffsetTimerIns()->GetEmb_dt();
-                pubOffsetTs.publish(msg);   
+                OffsetTimer_double.store(OffsetTimerIns()->GetEmb_dt());
+                // sensor_msgs::Imu::Ptr imu_msg(new sensor_msgs::Imu(*msg_in));
+                // imu_msg->header.stamp = ros::Time().fromSec(msg_in->header.stamp.toSec() + msg.data);
+                // pub_imu_offset_ts.publish(*imu_msg);
+	      	    pubOffsetTs.publish(msg);   
             }
         }
     }
@@ -351,7 +376,7 @@ void lioNode::standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg)
             lio_helper->mtx_buffer.unlock();
             lio_controller->sig_notify();
         }else{
-            odd_number.store(true);
+           odd_number.store(true);
         }
    }
 }
@@ -366,6 +391,11 @@ const std::string k_meta_map_fn = "meta_map.txt";
 bool lioNode::save_map_cbk(mower_msgs::TriggerRequest &req,mower_msgs::TriggerResponse &res){
     ROS_INFO("===================saveMap_cbk===================== ");
     if(!req.arg.empty()){
+        ROS_INFO("save_map_cbk(!req.arg.empty()) ++++++");
+        odom_file_initialized.store(false);
+        if(odom_file.is_open()){
+            odom_file.close();
+        }
         const std::string vmap_version = "V1";
         string map_path = string(ROOT_DIR) + req.arg ;
         if (map_path.back() != '/')
@@ -425,19 +455,28 @@ bool lioNode::save_map_cbk(mower_msgs::TriggerRequest &req,mower_msgs::TriggerRe
             res.result = 0;
             res.message = "No points to save or map not initialized";
         }
+    }else{
+        res.result = 0;
+        res.message = "The path is empty. Invalid map save request";
     }
+    
     return true;
 }
 
 bool lioNode::ctrl_mapping_cbk(mower_msgs::TriggerRequest &req,mower_msgs::TriggerResponse &res){
     if(req.arg =="reset_lio" ){
         ROS_INFO("ctrl_mapping_cbk(reset_lio) Resetting LIO ++++++");
+        odom_file_initialized.store(false);
         lio_controller->set_is_running(2);   //重置算法
+        if(odom_file.is_open()){
+            odom_file.close();
+        }
         res.result = 1;
         res.message = "LIO reset.";
         ROS_INFO_STREAM(res.message);
 
     }else if(req.arg =="start_mapping" ){
+        ROS_INFO("ctrl_mapping_cbk(start_mapping) start_mapping   ++++++");
         save_map.store(true);
         res.result = 1;
         res.message = "Started mapping";

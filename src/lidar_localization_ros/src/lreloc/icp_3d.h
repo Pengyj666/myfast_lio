@@ -18,7 +18,7 @@ typedef std::vector<PointT, Eigen::aligned_allocator<PointT>> PointVector;
 
 // 参数宏定义
 #ifndef NUM_MATCH_POINTS
-#define NUM_MATCH_POINTS 5
+#define NUM_MATCH_POINTS 5  
 #endif
 
 
@@ -46,13 +46,16 @@ public:
         const Eigen::Matrix4f& initial,
         int max_iterations = 30,
         double source_size = 0.1, // 默认SCAN_VOXEL_SIZE
-        double transformation_epsilon = 1e-6);
+        double transformation_epsilon = 1e-9);
 
     // KD树构建函数
     void kdtree_bulid(int scale, pcl::PointCloud<pcl::PointXYZINormal>::Ptr& map_cloud);
 
+    // 使用IKD-Tree计算法向量
+    bool computeNormalVector(const PointT& query_point, const PointVector& neighbors, PointT& normal_out);
+
 protected:
-    double MAP_VOXEL_SIZE;
+    double MAP_VOXEL_SIZE = 0.2;  // 设置默认值
     KD_TREE<PointT> kdtree;
     // 平面估计模板函数声明
     template<typename T>
@@ -62,6 +65,11 @@ protected:
 template<typename T>
 bool Icp3d::esti_plane(Eigen::Matrix<T, 4, 1> &pca_result, const PointVector &point, const T &threshold)
 {
+    // 安全检查
+    if (point.size() < NUM_MATCH_POINTS) {
+        return false;
+    }
+    
     Eigen::Matrix<T, NUM_MATCH_POINTS, 3> A;
     Eigen::Matrix<T, NUM_MATCH_POINTS, 1> b;
     A.setZero();
@@ -70,7 +78,7 @@ bool Icp3d::esti_plane(Eigen::Matrix<T, 4, 1> &pca_result, const PointVector &po
 
     // 构建线性方程组的系数矩阵A和常数向量b
     // 方程形式为: ax + by + cz = -1
-    for (int j = 0; j < NUM_MATCH_POINTS; j++)
+    for (int j = 0; j < NUM_MATCH_POINTS && j < point.size(); j++)
     {
         A(j,0) = point[j].x;
         A(j,1) = point[j].y;
@@ -82,13 +90,16 @@ bool Icp3d::esti_plane(Eigen::Matrix<T, 4, 1> &pca_result, const PointVector &po
 
     // 归一化法向量并计算平面参数
     T n = normvec.norm();
+    if (n < 1e-8) {  // 防止除零
+        return false;
+    }
     pca_result(0) = normvec(0) / n;
     pca_result(1) = normvec(1) / n;
     pca_result(2) = normvec(2) / n;
     pca_result(3) = 1.0 / n;
 
     // 检查所有点到拟合平面的距离是否都在阈值范围内
-    for (int j = 0; j < NUM_MATCH_POINTS; j++)
+    for (int j = 0; j < NUM_MATCH_POINTS && j < point.size(); j++)
     {
         if (fabs(pca_result(0) * point[j].x + pca_result(1) * point[j].y + pca_result(2) * point[j].z + pca_result(3)) > threshold)
         {

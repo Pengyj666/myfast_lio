@@ -28,10 +28,9 @@ private:
     std::string g_map_root_dir;
     double lidar_d;
 
-    
+    std::vector<Eigen::Matrix4f> map_to_odom_transforms;
     pcl::PointCloud<PointT>::Ptr global_map;
     utils::TimedQueue<Eigen::Matrix4f> initial_odom_queue;
-    utils::TimedQueue<Eigen::Matrix4f> cur_odom_queue;
     
     Eigen::Matrix4f T_map_to_odom;
     pcl::PointCloud<PointT>::Ptr cur_scan;
@@ -74,15 +73,15 @@ public:
     void regPubMapToOdomCallback(const std::function<void(std::shared_ptr<Eigen::Matrix4f>)> pub_map_to_odom_);
 
     void insert_initial_odom_queue(Eigen::Matrix4f & initial_odom,double time);
-    void set_cur_scan(pcl::PointCloud<PointT>::Ptr & cur_scan_);
+    void set_cur_scan(pcl::PointCloud<PointT>::Ptr & cur_scan_,double time);
     bool getCalculating() const { return calculating.load(); }
     double getCurScanTime() const { return cur_scan_time.load(); }
     int get_isLoadMap() const { return is_load_map.load(); }
 
+    double getOffsetTs() const { return offsetTs.load(); }
 
     void set_isLoadMap(int val) { is_load_map.store(val); }
     void setPoseReceived(bool value) { pose_received.store(value); }
-    void setCurScanTime(double time) { cur_scan_time.store(time); }
     void setOdomReceived(bool value) { odom_received.store(value); }
     void setScanReceived(bool value) { scan_received.store(value); }
     void setOffsetTs(double value) { offsetTs.store(value); }
