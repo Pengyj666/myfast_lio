@@ -1,0 +1,98 @@
+%YAML:1.0
+
+#common parameters
+#support: 1 imu 1 cam; 1 imu 2 cam: 2 cam; 
+imu: 1         
+num_of_cam: 2  
+
+imu_topic: "/vio/imu"
+image0_topic: "/vio/left/image_raw/compressed"
+image1_topic: "/vio/right/image_raw/compressed"
+output_path: "~/output/"
+
+cam0_calib: "sn233_cam0.yaml"
+cam1_calib: "sn233_cam1.yaml"
+image_width: 640
+image_height: 480
+
+
+# Extrinsic parameter between IMU and Camera.
+estimate_extrinsic: 0   # 0  Have an accurate extrinsic parameters. We will trust the following imu^R_cam, imu^T_cam, don't change it.
+                        # 1  Have an initial guess about extrinsic parameters. We will optimize around your initial guess.
+
+body_T_cam0: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: d
+   data: [-1.0,  0.0, 0.0, 0.05143,
+          0.0,  1.0, 0.0, -0.00453,
+          0.0,  0.0, -1.0, -0.01503,
+          0, 0, 0, 1]
+
+body_T_cam1: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: d
+   data: [-0.999986, 0.00446294, 0.00299538,  -0.0085733,
+          0.00447782,   0.999978, 0.00497723, -0.00431644,
+          -0.0029731, 0.00499057,  -0.999983, -0.0152574,
+          0, 0, 0, 1]
+
+# sn: IB51SZ02880
+# stereo params.
+# Kl = [449.748046875, 0, 324.0895080566406;
+#  0, 449.6258850097656, 228.5641632080078;
+#  0, 0, 1]
+# Dl = [-0.4155381321907043;
+#  0.2170610278844833;
+#  -0.0002855075290426612;
+#  4.279314816812985e-05;
+#  -0.06447643041610718]
+# Kr = [449.6416015625, 0, 323.9198608398438;
+#  0, 449.5936584472656, 231.1886444091797;
+#  0, 0, 1]
+# Dr = [-0.4147012829780579;
+#  0.2146917581558228;
+#  0.000413229747209698;
+#  0.0002172363601857796;
+#  -0.06248601898550987]
+# R_rl = [0.9999855548219636, 0.004477817640908698, 0.002973095454987287;
+#  -0.00446294429634906, 0.9999775878945226, -0.004990574802564366;
+#  -0.002995375705547568, 0.004977233953419493, 0.9999831272909336]
+# t_rl = [-0.06000407028198242;
+#  5.536968261003494e-05;
+#  -4.870776832103729e-05]
+
+
+#Multiple thread support
+multiple_thread: 1
+
+#feature traker paprameters
+max_cnt: 150            # max feature number in feature tracking
+min_dist: 30            # min distance between two features 
+freq: 10                # frequence (Hz) of publish tracking result. At least 10Hz for good estimation. If set 0, the frequence will be same as raw image 
+F_threshold: 1.0        # ransac threshold (pixel)
+show_track: 1           # publish tracking image as topic
+flow_back: 1            # perform forward and backward optical flow to improve feature tracking accuracy
+
+#optimization parameters
+max_solver_time: 0.04  # max solver itration time (ms), to guarantee real time
+max_num_iterations: 8   # max solver itrations, to guarantee real time
+keyframe_parallax: 10.0 # keyframe selection threshold (pixel)
+
+#imu parameters       The more accurate parameters you provide, the better performance
+acc_n: 0.5          # accelerometer measurement noise standard deviation. 
+gyr_n: 0.08         # gyroscope measurement noise standard deviation.     
+acc_w: 0.001        # accelerometer bias random work noise standard deviation.  
+gyr_w: 0.001        # gyroscope bias random work noise standard deviation.     
+g_norm: 9.81007     # gravity magnitude
+
+#unsynchronization parameters
+estimate_td: 1                      # online estimate time offset between camera and imu
+td: 0.0                             # initial value of time offset. unit: s. readed image clock + td = real image clock (IMU clock)
+
+#loop closure parameters
+load_previous_pose_graph: 0        # load and reuse previous pose graph; load from 'pose_graph_save_path'
+pose_graph_save_path: "~/output/pose_graph/" # save and load path
+save_image: 1                   # save image in pose graph for visualization prupose; you can close this function by setting 0 
+

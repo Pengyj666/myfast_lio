@@ -1,0 +1,3 @@
+<launch>
+    <node name="vmap_test" pkg="vmap" type="reloc_test" output="screen" args="-d $(find vmap)/../config/as_vio_euroc_stereo_imu.yaml" />
+</launch>

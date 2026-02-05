@@ -1,0 +1,4 @@
+<launch>
+    <node name="as_vio" pkg="as_stereo_imu_tracking" type="as_vio_node" respawn="true" respawn_delay="5" output="screen" args="-d $(find as_stereo_imu_tracking)/../config/as_vio_euroc_stereo_imu.yaml" />
+    <node name="as_vmap" pkg="vmap" type="as_vmap" respawn="true" respawn_delay="5" output="screen" args="-d $(find as_stereo_imu_tracking)/../config/as_vio_euroc_stereo_imu.yaml" />
+</launch>

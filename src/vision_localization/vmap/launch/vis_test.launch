@@ -1,0 +1,3 @@
+<launch>
+    <node name="vis_test" pkg="vmap" type="vis_test" output="screen" args="-d $(find vmap)/../config/as_vio_euroc_stereo_imu_test.yaml" />
+</launch>

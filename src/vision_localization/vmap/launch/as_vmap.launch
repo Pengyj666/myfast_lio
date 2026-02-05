@@ -1,0 +1,3 @@
+<launch>
+    <node name="as_vmap" pkg="vmap" type="as_vmap" output="screen" respawn="true" respawn_delay="5" args="-d $(find vmap)/../config/as_vio_euroc_stereo_imu.yaml" />
+</launch>

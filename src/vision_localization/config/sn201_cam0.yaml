@@ -1,0 +1,18 @@
+%YAML:1.0
+---
+sn: IB41SZ00880
+model_type: PINHOLE_FULL
+camera_name: camera0
+image_width: 640
+image_height: 480
+distortion_parameters:
+   k1: -4.1786822676658630e-01
+   k2: 2.2426512837409973e-01
+   k3: -7.0185758173465729e-02
+   p1: 1.1921262921532616e-04
+   p2: -3.5174135700799525e-04
+projection_parameters:
+   fx: 4.4967968750000000e+02
+   fy: 4.4954309082031250e+02
+   cx: 3.1797634887695312e+02
+   cy: 2.4183259582519531e+02

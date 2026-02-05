@@ -1,0 +1,3 @@
+<launch>
+    <node name="as_stereo" pkg="vmap" type="as_stereo" output="screen" args="-d $(find vmap)/../config/as_vio_euroc_stereo_imu.yaml" />
+</launch>

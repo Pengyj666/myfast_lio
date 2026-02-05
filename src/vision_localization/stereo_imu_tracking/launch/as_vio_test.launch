@@ -1,0 +1,3 @@
+<launch>
+    <node name="as_vio" pkg="as_stereo_imu_tracking" type="as_vio_node" output="screen" args="-d $(find as_stereo_imu_tracking)/../config/as_vio_euroc_stereo_imu_test.yaml" />
+</launch>

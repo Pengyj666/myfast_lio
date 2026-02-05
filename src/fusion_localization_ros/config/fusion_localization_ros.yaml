@@ -1,0 +1,121 @@
+# 发布定位坐标树
+map_frame: "map"
+odom_frame: "odom"
+base_frame: "base_link"
+
+# 位姿发布频率hz:[50,100]
+frequency: 100
+      
+#GPS（base_link） imu 杆臂值
+imu_p_Gps_x: 0.0
+imu_p_Gps_y: 0.0
+imu_p_Gps_z: 0.017
+
+# 噪声参数
+acc_noise: 0.01
+gyro_noise: 0.0001
+acc_bias_noise: 0.000001
+gyro_bias_noise: 0.00000001
+
+# JOHN_NOTE 所有内部定位计算的杆臂均以GPS天线中心为原点，对外输出的定位以驱动轮轴中心为原点
+TF_vio2gps_x: 0.353
+TF_vio2gps_y: -0.021
+TF_vio2gps_z: -0.0    # -0.069: 双目imu 距离 天线上表面高度
+
+TF_lidar2gps_x: 0.331
+TF_lidar2gps_y: 0.0
+TF_lidar2gps_z: 0.0
+
+TF_lidar2base_x: 0.429
+TF_lidar2base_y: 0.0    # -0.013
+TF_lidar2base_z: 0.0    # 0.199: lidar-imu 距离轮轴高度
+
+TF_imu2gps_x: 0.0
+TF_imu2gps_y: 0.0
+TF_imu2gps_z: -0.0    # -0.017: imu 距离 天线上表面高度
+
+TF_gps2base_x: 0.098
+TF_gps2base_y: 0.0
+TF_gps2base_z: 0.0    # 0.326: 天线上表面离地高度, 0.214: 天线上表面离轮轴高度
+
+ESKF_rpy_update_factor: 0.2
+
+line_heading_update_factor: 0.7     # 直线段航向角修正权重
+line_heading_update_dts: 0.2        # 直线段航线角修正时间间隔, sec
+line_heading_update_max: 0.8        # 直线段航向角修正最大偏差(超过此偏差不修正), rad
+line_heading_noise: 0.000036        # 直线段估计航向角噪声, rad^2
+
+line_heading_KF_dist: 0.05          # 直线段估计航向角: rtk关键帧间隔距离, m
+line_heading_KF_window: 10          # 直线段估计航向角: rtk关键帧窗口大小, 个
+line_heading_dist_min: 0.3          # 直线段估计航向角: rtk首尾间隔最小距离, m
+line_heading_dist_max: 0.8          # 直线段估计航向角: rtk首尾间隔最大距离, m
+line_heading_imu_diff_yaw: 0.17     # 直线段估计航向角: imu航向角离散极差, 偏离均值的最大值, rad 
+line_heading_imu_sigma_yaw: 0.08    # 直线段估计航向角: imu航向角离散标准差, rad
+line_heading_imu_sum_yaw: 0.08      # 直线段估计航向角: imu航向角头尾差, rad
+
+# VIO的杆臂(以驱动轮轴中心为原点), 元橡光心在右目上
+# JOHN_NOTE 后续还要考虑Z轴的杆臂
+base_vio_x: 0.466
+base_vio_y: -0.041
+
+# GPS的杆臂(以驱动轮轴中心为原点)
+base_gps_x: 0.098
+base_gps_y: 0.0
+
+active_offset_map: true
+
+# new config
+ESKF_show_debug_info: false
+ESKF_record_bag: true
+ESKF_offset_gnss_x: 3.0   # 卫星图可视化的偏移修正, 东向
+ESKF_offset_gnss_y: -9.0  # 卫星图可视化的偏移修正, 北向
+
+ESKF_wheel_max_ts: 10.0        # 掉RTK和VIO失效后, 靠轮速最多支撑多久, sec
+ESKF_max_vio_init_dist: 20.0   # VIO在桩初始化最大跟踪里程(包含角程)
+ESKF_max_vio_dist: 100.0   # VIO定位最大里程(包含角程)
+ESKF_rtk_to_vio_track_ck_dist: 1.2  # 切入VIO跟踪时, RTK轨迹与VIO轨迹的匹配距离
+
+ESKF_vio2base_x: 17.8
+ESKF_vio2base_y: 4.5
+ESKF_vio2base_yaw: -0.10
+
+# imu 频率
+imu_acc_lpf: true         # 是否对加速度计应用低通滤波器
+imu_frequency: 100
+imu_cutoff_frequency: 12
+
+# vio话题和服务名称
+vio_topic: "/as_vio/vio_pose_result"
+vio_reset_srv: "/as_vio/ctrl"
+
+# vio 内存监控
+vio_memory_threshold_1: 300   # 单位:MB
+vio_memory_threshold_2: 600   # 单位:MB
+vio_memory_threshold_3: 700   # 单位:MB
+
+# 检测rtk基站与充电桩相对偏移阈值
+rtk_dock_diff_dist: 0.5       # 单位:m
+
+# 视觉建图
+use_vmap: false
+
+# 固定解经纬标准差上限
+rtk_fix_ll_sigma: 0.02
+# 浮点解经纬标准差上限
+rtk_float_ll_sigma: 0.03
+
+# SpaConfig
+pose_adj_factor: 1.0
+pose_align_factor: 0.16
+pose_rp_factor: 0.04
+rtk_fix_info_sigma: 0.49
+rtk_float_info_sigma: 0.03
+reloc_info_pos_sigma: 0.3
+reloc_info_quat_sigma: 0.1
+
+# 融合类型: 0: RTK+VSLAM, 1: VISION, 2: LIDAR
+fusion_type: 0
+
+track_off_rtk_dist: 300.0     # rtk
+track_off_reloc_dist: 60.0    # 在桩, vio/lio-reloc 
+track_only_iw_dist: 20.0      # iw跟踪(vio/lio 里程计)

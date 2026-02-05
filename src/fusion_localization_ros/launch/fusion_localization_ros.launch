@@ -1,0 +1,5 @@
+<launch>
+  <node pkg="fusion_localization_ros" type="fusion_localization_node" name="fusion_localization_node" respawn="true" respawn_delay="10" output="screen">
+    <rosparam command="load" file="$(find fusion_localization_ros)/config/fusion_localization_ros.yaml"/>
+  </node>
+</launch>
