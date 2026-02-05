@@ -1,0 +1,38 @@
+CMake Warning (dev) at CMakeLists.txt:2 (project):
+  Policy CMP0048 is not set: project() command manages VERSION variables.
+  Run "cmake --help-policy CMP0048" for policy details.  Use the cmake_policy
+  command to set the policy and suppress this warning.
+
+  The following variable(s) would be set to empty:
+
+    CMAKE_PROJECT_VERSION
+    CMAKE_PROJECT_VERSION_MAJOR
+    CMAKE_PROJECT_VERSION_MINOR
+    CMAKE_PROJECT_VERSION_PATCH
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+Current CPU architecture: x86_64
+Processor number:  16
+core for MP: 7
+** WARNING ** io features related to pcap will be disabled
+** WARNING ** io features related to png will be disabled
+** WARNING ** io features related to libusb-1.0 will be disabled
+Eigen:/usr/include/eigen3
+[31m[1mCMake Error[0m at /home/edy/code/githubSlam/FAST_LIO/src/lidar_localization_ros/CMakeLists.txt:148 (add_executable):
+  Cannot find source file:
+
+    /home/edy/code/githubSlam/FAST_LIO/src/fusion_common/common/offset_timer.cpp
+
+  Tried extensions .c .C .c++ .cc .cpp .cxx .cu .m .M .mm .h .hh .h++ .hm
+  .hpp .hxx .in .txx
+
+
+[31m[1mCMake Error[0m at /home/edy/code/githubSlam/FAST_LIO/src/lidar_localization_ros/CMakeLists.txt:148 (add_executable):
+  No SOURCES given to target: fastlio_mapping
+
+
+[31m[1mCMake Error[0m at /home/edy/code/githubSlam/FAST_LIO/src/lidar_localization_ros/CMakeLists.txt:129 (add_library):
+  No SOURCES given to target: fastlio_library
+
+
+CMake Generate step failed.  Build files cannot be regenerated correctly.
